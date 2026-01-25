@@ -15,9 +15,9 @@ const CHUNK_SIZE: usize = 16;
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
 struct Vertex {
     position: [f32; 3],
-    color: [f32; 3],
+    tex_coords: [f32; 2],
     brightness: f32,
-    _padding: f32,
+    texture_index: u32,
 }
 
 impl Vertex {
@@ -34,12 +34,17 @@ impl Vertex {
                 wgpu::VertexAttribute {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
-                    format: wgpu::VertexFormat::Float32x3,
+                    format: wgpu::VertexFormat::Float32x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: (std::mem::size_of::<[f32; 3]>() * 2) as wgpu::BufferAddress,
+                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 2]>()) as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32,
+                },
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 2]>() + std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+                    shader_location: 3,
+                    format: wgpu::VertexFormat::Uint32,
                 },
             ],
         }
@@ -108,12 +113,18 @@ enum BlockType {
 }
 
 impl BlockType {
-    fn color(&self) -> [f32; 3] {
+    fn get_texture_indices(&self, face: usize) -> u32 {
         match self {
-            BlockType::Air => [0.0, 0.0, 0.0],
-            BlockType::Grass => [0.2, 0.8, 0.2],
-            BlockType::Dirt => [0.6, 0.4, 0.2],
-            BlockType::Stone => [0.5, 0.5, 0.5],
+            BlockType::Air => 0,
+            BlockType::Grass => {
+                match face {
+                    3 => 0, // Top - grass_top.png
+                    2 => 1, // Bottom - grass_bottom.png
+                    _ => 2, // Sides - grass_side.png
+                }
+            }
+            BlockType::Dirt => 3, // dirt.png
+            BlockType::Stone => 4, // stone.png
         }
     }
 }
@@ -169,7 +180,6 @@ impl Chunk {
                         continue;
                     }
 
-                    let color = block.color();
                     let pos = [x as f32, y as f32, z as f32];
 
                     // Check each face and only add if neighbor is air
@@ -188,7 +198,8 @@ impl Chunk {
                         }
 
                         let base_index = vertices.len() as u32;
-                        let face_verts = get_face_vertices(pos, face_id, color);
+                        let texture_index = block.get_texture_indices(face_id);
+                        let face_verts = get_face_vertices(pos, face_id, texture_index);
                         vertices.extend_from_slice(&face_verts);
 
                         indices.extend_from_slice(&[
@@ -204,7 +215,7 @@ impl Chunk {
     }
 }
 
-fn get_face_vertices(pos: [f32; 3], face: usize, color: [f32; 3]) -> [Vertex; 4] {
+fn get_face_vertices(pos: [f32; 3], face: usize, texture_index: u32) -> [Vertex; 4] {
     let [x, y, z] = pos;
 
     // Different brightness for different faces (like Minecraft)
@@ -218,43 +229,87 @@ fn get_face_vertices(pos: [f32; 3], face: usize, color: [f32; 3]) -> [Vertex; 4]
 
     match face {
         0 => [ // Left (-X) - looking from left, CCW from bottom-left
-            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z], tex_coords: [0.0, 1.0], brightness, texture_index },
+            Vertex { position: [x, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
+            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x, y + 1.0, z], tex_coords: [0.0, 0.0], brightness, texture_index },
         ],
         1 => [ // Right (+X) - looking from right, CCW from bottom-left
-            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y, z], tex_coords: [1.0, 1.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
         ],
         2 => [ // Bottom (-Y) - looking from bottom, CCW
-            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
+            Vertex { position: [x, y, z], tex_coords: [0.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y, z], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
         ],
         3 => [ // Top (+Y) - looking from top, CCW
-            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z], tex_coords: [0.0, 1.0], brightness, texture_index },
+            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [1.0, 1.0], brightness, texture_index },
         ],
         4 => [ // Back (-Z) - looking from back, CCW
-            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z], tex_coords: [1.0, 1.0], brightness, texture_index },
+            Vertex { position: [x, y + 1.0, z], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [0.0, 0.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y, z], tex_coords: [0.0, 1.0], brightness, texture_index },
         ],
         5 => [ // Front (+Z) - looking from front, CCW
-            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
-            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
+            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
+            Vertex { position: [x, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
         ],
         _ => unreachable!(),
     }
+}
+
+fn load_texture(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    path: &str,
+) -> wgpu::Texture {
+    let img = image::open(path).unwrap().to_rgba8();
+    let dimensions = img.dimensions();
+
+    let size = wgpu::Extent3d {
+        width: dimensions.0,
+        height: dimensions.1,
+        depth_or_array_layers: 1,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(path),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &img,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * dimensions.0),
+            rows_per_image: Some(dimensions.1),
+        },
+        size,
+    );
+
+    texture
 }
 
 struct State {
@@ -270,6 +325,7 @@ struct State {
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    texture_bind_group: wgpu::BindGroup,
     keys_pressed: std::collections::HashSet<KeyCode>,
     mouse_pressed: bool,
     last_mouse_pos: Option<(f64, f64)>,
@@ -296,7 +352,8 @@ impl State {
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                required_features: wgpu::Features::empty(),
+                required_features: wgpu::Features::TEXTURE_BINDING_ARRAY
+                    | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING,
                 required_limits: wgpu::Limits::default(),
                 memory_hints: Default::default(),
             },
@@ -320,6 +377,70 @@ impl State {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+
+        // Load textures
+        let texture_paths = [
+            "assets/textures/grass_top.png",
+            "assets/textures/grass_bottom.png",
+            "assets/textures/grass_side.png",
+            "assets/textures/dirt.png",
+            "assets/textures/stone.png",
+        ];
+
+        let textures: Vec<_> = texture_paths.iter()
+            .map(|path| load_texture(&device, &queue, path))
+            .collect();
+
+        let texture_views: Vec<_> = textures.iter()
+            .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
+            .collect();
+
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: Some(std::num::NonZeroU32::new(5).unwrap()),
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("texture_bind_group_layout"),
+        });
+
+        let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureViewArray(&texture_views.iter().collect::<Vec<_>>()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("texture_bind_group"),
+        });
 
         let camera = Camera::new(size.width as f32 / size.height as f32);
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -358,7 +479,7 @@ impl State {
 
         let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout],
+            bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -432,6 +553,7 @@ impl State {
             camera,
             camera_buffer,
             camera_bind_group,
+            texture_bind_group,
             keys_pressed: std::collections::HashSet::new(),
             mouse_pressed: false,
             last_mouse_pos: None,
@@ -589,6 +711,7 @@ impl State {
 
             render_pass.set_pipeline(&self.render_pipeline);
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
+            render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
