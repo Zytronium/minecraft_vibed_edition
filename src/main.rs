@@ -1,13 +1,14 @@
-use winit::{
-    event::*,
-    event_loop::{EventLoop, ActiveEventLoop},
-    window::Window,
-    keyboard::{KeyCode, PhysicalKey},
-    application::ApplicationHandler,
-};
-use wgpu::util::DeviceExt;
 use glam::{Mat4, Vec3};
+use noise::{NoiseFn, Perlin, Seedable};
 use std::sync::Arc;
+use wgpu::util::DeviceExt;
+use winit::{
+    application::ApplicationHandler,
+    event::*,
+    event_loop::{ActiveEventLoop, EventLoop},
+    keyboard::{KeyCode, PhysicalKey},
+    window::Window,
+};
 
 const CHUNK_SIZE: usize = 16;
 
@@ -37,12 +38,16 @@ impl Vertex {
                     format: wgpu::VertexFormat::Float32x2,
                 },
                 wgpu::VertexAttribute {
-                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 2]>()) as wgpu::BufferAddress,
+                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 2]>())
+                        as wgpu::BufferAddress,
                     shader_location: 2,
                     format: wgpu::VertexFormat::Float32,
                 },
                 wgpu::VertexAttribute {
-                    offset: (std::mem::size_of::<[f32; 3]>() + std::mem::size_of::<[f32; 2]>() + std::mem::size_of::<f32>()) as wgpu::BufferAddress,
+                    offset: (std::mem::size_of::<[f32; 3]>()
+                        + std::mem::size_of::<[f32; 2]>()
+                        + std::mem::size_of::<f32>())
+                        as wgpu::BufferAddress,
                     shader_location: 3,
                     format: wgpu::VertexFormat::Uint32,
                 },
@@ -78,17 +83,9 @@ impl Camera {
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
 
-        let front = Vec3::new(
-            cos_pitch * cos_yaw,
-            sin_pitch,
-            cos_pitch * sin_yaw,
-        ).normalize();
+        let front = Vec3::new(cos_pitch * cos_yaw, sin_pitch, cos_pitch * sin_yaw).normalize();
 
-        let view = Mat4::look_at_rh(
-            self.position,
-            self.position + front,
-            Vec3::Y,
-        );
+        let view = Mat4::look_at_rh(self.position, self.position + front, Vec3::Y);
 
         let proj = Mat4::perspective_rh(self.fov, self.aspect, self.near, self.far);
         (proj * view).to_cols_array_2d()
@@ -123,7 +120,7 @@ impl BlockType {
                     _ => 2, // Sides - grass_side.png
                 }
             }
-            BlockType::Dirt => 3, // dirt.png
+            BlockType::Dirt => 3,  // dirt.png
             BlockType::Stone => 4, // stone.png
         }
     }
@@ -137,18 +134,41 @@ impl Chunk {
     fn new() -> Self {
         let mut blocks = [[[BlockType::Air; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
 
-        // Generate simple terrain
+        let perlin = Perlin::new(42);
+
         for x in 0..CHUNK_SIZE {
             for z in 0..CHUNK_SIZE {
-                let height = 6 + ((x + z) % 3) as i32;
+                // Multi-octave noise for natural terrain
+                let nx = x as f64 / 16.0;
+                let nz = z as f64 / 16.0;
+
+                // Base terrain with large features
+                let base = perlin.get([nx * 2.0, nz * 2.0]) * 8.0;
+
+                // Add smaller hills
+                let detail = perlin.get([nx * 6.0, nz * 6.0]) * 3.0;
+
+                // Final height calculation
+                let height = (8.0 + base + detail).max(3.0).min(14.0) as i32;
+
                 for y in 0..CHUNK_SIZE {
                     blocks[x][y][z] = if y < height as usize {
-                        if y == height as usize - 1 {
+                        let depth = height as usize - y;
+
+                        if depth == 1 {
                             BlockType::Grass
-                        } else if y > height as usize - 4 {
+                        } else if depth <= 4 {
                             BlockType::Dirt
                         } else {
-                            BlockType::Stone
+                            // Add some caves using 3D noise
+                            let cave_noise =
+                                perlin.get([x as f64 / 8.0, y as f64 / 8.0, z as f64 / 8.0]);
+
+                            if cave_noise > 0.5 && y > 2 {
+                                BlockType::Air
+                            } else {
+                                BlockType::Stone
+                            }
                         }
                     } else {
                         BlockType::Air
@@ -161,8 +181,13 @@ impl Chunk {
     }
 
     fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
-        if x < 0 || y < 0 || z < 0 ||
-            x >= CHUNK_SIZE as i32 || y >= CHUNK_SIZE as i32 || z >= CHUNK_SIZE as i32 {
+        if x < 0
+            || y < 0
+            || z < 0
+            || x >= CHUNK_SIZE as i32
+            || y >= CHUNK_SIZE as i32
+            || z >= CHUNK_SIZE as i32
+        {
             return BlockType::Air;
         }
         self.blocks[x as usize][y as usize][z as usize]
@@ -193,7 +218,9 @@ impl Chunk {
                     ];
 
                     for (offset, face_id) in faces {
-                        if self.get_block(x + offset[0], y + offset[1], z + offset[2]) != BlockType::Air {
+                        if self.get_block(x + offset[0], y + offset[1], z + offset[2])
+                            != BlockType::Air
+                        {
                             continue;
                         }
 
@@ -203,8 +230,12 @@ impl Chunk {
                         vertices.extend_from_slice(&face_verts);
 
                         indices.extend_from_slice(&[
-                            base_index, base_index + 1, base_index + 2,
-                            base_index + 2, base_index + 3, base_index,
+                            base_index,
+                            base_index + 1,
+                            base_index + 2,
+                            base_index + 2,
+                            base_index + 3,
+                            base_index,
                         ]);
                     }
                 }
@@ -220,59 +251,181 @@ fn get_face_vertices(pos: [f32; 3], face: usize, texture_index: u32) -> [Vertex;
 
     // Different brightness for different faces (like Minecraft)
     let brightness = match face {
-        3 => 1.0,   // Top - brightest
+        3 => 1.0,     // Top - brightest
         4 | 5 => 0.8, // Front/Back - medium-bright
         0 | 1 => 0.6, // Left/Right - medium-dark
-        2 => 0.5,   // Bottom - darkest
+        2 => 0.5,     // Bottom - darkest
         _ => 1.0,
     };
 
     match face {
-        0 => [ // Left (-X) - looking from left, CCW from bottom-left
-            Vertex { position: [x, y, z], tex_coords: [0.0, 1.0], brightness, texture_index },
-            Vertex { position: [x, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
-            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x, y + 1.0, z], tex_coords: [0.0, 0.0], brightness, texture_index },
+        0 => [
+            // Left (-X) - looking from left, CCW from bottom-left
+            Vertex {
+                position: [x, y, z],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y, z + 1.0],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y + 1.0, z + 1.0],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y + 1.0, z],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
         ],
-        1 => [ // Right (+X) - looking from right, CCW from bottom-left
-            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y, z], tex_coords: [1.0, 1.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
+        1 => [
+            // Right (+X) - looking from right, CCW from bottom-left
+            Vertex {
+                position: [x + 1.0, y, z + 1.0],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y, z],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z + 1.0],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
         ],
-        2 => [ // Bottom (-Y) - looking from bottom, CCW
-            Vertex { position: [x, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
-            Vertex { position: [x, y, z], tex_coords: [0.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y, z], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
+        2 => [
+            // Bottom (-Y) - looking from bottom, CCW
+            Vertex {
+                position: [x, y, z + 1.0],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y, z],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y, z],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y, z + 1.0],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
         ],
-        3 => [ // Top (+Y) - looking from top, CCW
-            Vertex { position: [x, y + 1.0, z], tex_coords: [0.0, 1.0], brightness, texture_index },
-            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [1.0, 1.0], brightness, texture_index },
+        3 => [
+            // Top (+Y) - looking from top, CCW
+            Vertex {
+                position: [x, y + 1.0, z],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y + 1.0, z + 1.0],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z + 1.0],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
         ],
-        4 => [ // Back (-Z) - looking from back, CCW
-            Vertex { position: [x, y, z], tex_coords: [1.0, 1.0], brightness, texture_index },
-            Vertex { position: [x, y + 1.0, z], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z], tex_coords: [0.0, 0.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y, z], tex_coords: [0.0, 1.0], brightness, texture_index },
+        4 => [
+            // Back (-Z) - looking from back, CCW
+            Vertex {
+                position: [x, y, z],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y + 1.0, z],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y, z],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
         ],
-        5 => [ // Front (+Z) - looking from front, CCW
-            Vertex { position: [x + 1.0, y, z + 1.0], tex_coords: [1.0, 1.0], brightness, texture_index },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], tex_coords: [1.0, 0.0], brightness, texture_index },
-            Vertex { position: [x, y + 1.0, z + 1.0], tex_coords: [0.0, 0.0], brightness, texture_index },
-            Vertex { position: [x, y, z + 1.0], tex_coords: [0.0, 1.0], brightness, texture_index },
+        5 => [
+            // Front (+Z) - looking from front, CCW
+            Vertex {
+                position: [x + 1.0, y, z + 1.0],
+                tex_coords: [1.0, 1.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x + 1.0, y + 1.0, z + 1.0],
+                tex_coords: [1.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y + 1.0, z + 1.0],
+                tex_coords: [0.0, 0.0],
+                brightness,
+                texture_index,
+            },
+            Vertex {
+                position: [x, y, z + 1.0],
+                tex_coords: [0.0, 1.0],
+                brightness,
+                texture_index,
+            },
         ],
         _ => unreachable!(),
     }
 }
 
-fn load_texture(
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    path: &str,
-) -> wgpu::Texture {
+fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> wgpu::Texture {
     let img = image::open(path).unwrap().to_rgba8();
     let dimensions = img.dimensions();
 
@@ -343,11 +496,14 @@ impl State {
 
         let surface = instance.create_surface(window.clone()).unwrap();
 
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::default(),
-            compatible_surface: Some(&surface),
-            force_fallback_adapter: false,
-        }).await.unwrap();
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .unwrap();
 
         let (device, queue) = adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -361,7 +517,9 @@ impl State {
         ).await.unwrap();
 
         let surface_caps = surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats.iter()
+        let surface_format = surface_caps
+            .formats
+            .iter()
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
@@ -387,11 +545,13 @@ impl State {
             "assets/textures/stone.png",
         ];
 
-        let textures: Vec<_> = texture_paths.iter()
+        let textures: Vec<_> = texture_paths
+            .iter()
             .map(|path| load_texture(&device, &queue, path))
             .collect();
 
-        let texture_views: Vec<_> = textures.iter()
+        let texture_views: Vec<_> = textures
+            .iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
 
@@ -405,34 +565,37 @@ impl State {
             ..Default::default()
         });
 
-        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        multisampled: false,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+        let texture_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        },
+                        count: Some(std::num::NonZeroU32::new(5).unwrap()),
                     },
-                    count: Some(std::num::NonZeroU32::new(5).unwrap()),
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-            label: Some("texture_bind_group_layout"),
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+                label: Some("texture_bind_group_layout"),
+            });
 
         let texture_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureViewArray(&texture_views.iter().collect::<Vec<_>>()),
+                    resource: wgpu::BindingResource::TextureViewArray(
+                        &texture_views.iter().collect::<Vec<_>>(),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
@@ -449,19 +612,20 @@ impl State {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let camera_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
-            label: Some("camera_bind_group_layout"),
-        });
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_bind_group_layout"),
+            });
 
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &camera_bind_group_layout,
@@ -477,11 +641,12 @@ impl State {
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        let render_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Render Pipeline Layout"),
-            bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
-            push_constant_ranges: &[],
-        });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
+                push_constant_ranges: &[],
+            });
 
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
@@ -574,11 +739,12 @@ impl State {
     fn input(&mut self, event: &WindowEvent) -> bool {
         match event {
             WindowEvent::KeyboardInput {
-                event: KeyEvent {
-                    physical_key: PhysicalKey::Code(key),
-                    state,
-                    ..
-                },
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(key),
+                        state,
+                        ..
+                    },
                 ..
             } => {
                 let is_pressed = *state == ElementState::Pressed;
@@ -596,10 +762,14 @@ impl State {
             } => {
                 self.mouse_pressed = *state == ElementState::Pressed;
                 if self.mouse_pressed {
-                    let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
+                    let _ = self
+                        .window
+                        .set_cursor_grab(winit::window::CursorGrabMode::Confined);
                     self.window.set_cursor_visible(false);
                 } else {
-                    let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                    let _ = self
+                        .window
+                        .set_cursor_grab(winit::window::CursorGrabMode::None);
                     self.window.set_cursor_visible(true);
                     self.last_mouse_pos = None;
                 }
@@ -651,7 +821,10 @@ impl State {
             self.camera.yaw += dx * sensitivity;
             self.camera.pitch -= dy * sensitivity;
 
-            self.camera.pitch = self.camera.pitch.clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
+            self.camera.pitch = self
+                .camera
+                .pitch
+                .clamp(-89.0_f32.to_radians(), 89.0_f32.to_radians());
         }
 
         self.last_mouse_pos = Some(position);
@@ -659,7 +832,9 @@ impl State {
 
     fn render(&mut self) -> Result<(), wgpu::SurfaceError> {
         let output = self.surface.get_current_texture()?;
-        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let view = output
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
 
         let depth_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Depth Texture"),
@@ -677,9 +852,11 @@ impl State {
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Render Encoder"),
-        });
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("Render Encoder"),
+            });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -741,7 +918,12 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: winit::window::WindowId, event: WindowEvent) {
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
         if let Some(state) = &mut self.state {
             if !state.input(&event) {
                 match event {
