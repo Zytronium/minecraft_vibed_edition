@@ -10,8 +10,9 @@ use glam::{Mat4, Vec3};
 use std::sync::Arc;
 use noise::{NoiseFn, Perlin, Seedable};
 
-// Size of each chunk in blocks (16x16x16)
-const CHUNK_SIZE: usize = 16;
+// Chunk dimensions
+const CHUNK_WIDTH: usize = 16;   // Horizontal size (X and Z)
+const CHUNK_HEIGHT: usize = 128; // Vertical size (Y) - like Minecraft 1.18+
 
 // Number of chunks in each horizontal direction (16x16 = 256 total chunks)
 const WORLD_SIZE_CHUNKS: i32 = 16;
@@ -77,11 +78,11 @@ struct Camera {
 impl Camera {
     fn new(aspect: f32) -> Self {
         Self {
-            // Start camera in the middle of the world, elevated
+            // Start camera in the middle of the world, elevated above terrain
             position: Vec3::new(
-                (WORLD_SIZE_CHUNKS * CHUNK_SIZE as i32 / 2) as f32,
-                20.0,
-                (WORLD_SIZE_CHUNKS * CHUNK_SIZE as i32 / 2) as f32
+                (WORLD_SIZE_CHUNKS * CHUNK_WIDTH as i32 / 2) as f32,
+                80.0,  // Above the surface (surface is around Y 64)
+                (WORLD_SIZE_CHUNKS * CHUNK_WIDTH as i32 / 2) as f32
             ),
             yaw: -90.0_f32.to_radians(),  // Face forward (negative Z)
             pitch: 0.0,
@@ -158,76 +159,165 @@ impl BlockType {
     }
 }
 
-/// A 16x16x16 section of the world
+/// A 16x128x16 section of the world
 struct Chunk {
-    blocks: [[[BlockType; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE],
-    offset_x: i32,  // Chunk position in world (X * CHUNK_SIZE)
-    offset_z: i32,  // Chunk position in world (Z * CHUNK_SIZE)
+    blocks: [[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
+    offset_x: i32,  // Chunk position in world (X * CHUNK_WIDTH)
+    offset_z: i32,  // Chunk position in world (Z * CHUNK_WIDTH)
+}
+
+/// Smooth interpolation function (smoothstep) for blending values
+/// Returns 0 when x <= edge0, 1 when x >= edge1, smooth curve in between
+fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
+    let t = ((x - edge0) / (edge1 - edge0)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
 }
 
 impl Chunk {
     /// Generate a new chunk with procedural terrain at the given chunk coordinates
     fn new(chunk_x: i32, chunk_z: i32) -> Self {
-        let mut blocks = [[[BlockType::Air; CHUNK_SIZE]; CHUNK_SIZE]; CHUNK_SIZE];
+        let mut blocks = [[[BlockType::Air; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH];
 
-        // Initialize Perlin noise generator with a seed
-        let perlin = Perlin::new(42);
+        // Initialize multiple Perlin noise generators with different seeds for variety
+        let terrain_perlin = Perlin::new(42);      // Primary terrain shape
+        let biome_perlin = Perlin::new(1337);      // Biome selection
+        let cave_perlin = Perlin::new(9999);       // 3D cave system
+        let detail_perlin = Perlin::new(7777);     // Fine surface details
 
         // World offset for this chunk
-        let world_offset_x = chunk_x * CHUNK_SIZE as i32;
-        let world_offset_z = chunk_z * CHUNK_SIZE as i32;
+        let world_offset_x = chunk_x * CHUNK_WIDTH as i32;
+        let world_offset_z = chunk_z * CHUNK_WIDTH as i32;
 
         // Generate terrain for each column in the chunk
-        for x in 0..CHUNK_SIZE {
-            for z in 0..CHUNK_SIZE {
+        for x in 0..CHUNK_WIDTH {
+            for z in 0..CHUNK_WIDTH {
                 // Calculate world coordinates for noise sampling
                 let world_x = (world_offset_x + x as i32) as f64;
                 let world_z = (world_offset_z + z as i32) as f64;
 
-                // Normalize coordinates for noise (smaller values = larger features)
-                let nx = world_x / 32.0;
-                let nz = world_z / 32.0;
+                // Normalize coordinates for noise sampling
+                let nx = world_x / 100.0;  // Scale for large features
+                let nz = world_z / 100.0;
 
-                // Layer 1: Large-scale terrain features (mountains and valleys)
-                let base = perlin.get([nx * 1.5, nz * 1.5]) * 10.0;
+                // === BIOME SYSTEM ===
+                // Use low-frequency noise to create distinct biome regions
+                let biome_noise = biome_perlin.get([nx * 0.3, nz * 0.3]);
 
-                // Layer 2: Medium-scale hills
-                let hills = perlin.get([nx * 4.0, nz * 4.0]) * 4.0;
+                // Temperature and moisture create different biome types
+                let temperature = biome_perlin.get([nx * 0.5, nz * 0.5]);
+                let moisture = biome_perlin.get([nx * 0.5 + 100.0, nz * 0.5 + 100.0]);
 
-                // Layer 3: Small details
-                let detail = perlin.get([nx * 8.0, nz * 8.0]) * 1.5;
+                // === TERRAIN HEIGHT GENERATION ===
+                // Generate height for each biome type independently
 
-                // Combine layers and clamp to valid range
-                let height = (7.0 + base + hills + detail).max(3.0).min(14.0) as i32;
+                // MOUNTAIN BIOME - Tall, dramatic peaks
+                let mountain_base = terrain_perlin.get([nx * 0.8, nz * 0.8]) * 35.0;
+                let mountain_peaks = terrain_perlin.get([nx * 1.5, nz * 1.5]).abs() * 25.0;
+                let mountain_ridges = terrain_perlin.get([nx * 3.0, nz * 3.0]).abs() * 15.0;
+                let mountain_height = 64.0 + mountain_base + mountain_peaks + mountain_ridges;
 
-                // Fill column from bottom to surface height
-                for y in 0..CHUNK_SIZE {
-                    blocks[x][y][z] = if y < height as usize {
-                        let depth = height as usize - y;
+                // HILLS BIOME - Rolling terrain with moderate elevation
+                let hills_base = terrain_perlin.get([nx * 1.2, nz * 1.2]) * 15.0;
+                let hills_medium = terrain_perlin.get([nx * 2.5, nz * 2.5]) * 10.0;
+                let hills_small = detail_perlin.get([nx * 5.0, nz * 5.0]) * 4.0;
+                let hills_height = 64.0 + hills_base + hills_medium + hills_small;
 
-                        // Top layer is grass
-                        if depth == 1 {
-                            BlockType::Grass
-                        // Next 3 layers are dirt
-                        } else if depth <= 4 {
-                            BlockType::Dirt
-                        // Everything below is stone (with potential caves)
-                        } else {
-                            // 3D noise for cave generation
-                            let cave_noise = perlin.get([
-                                world_x / 12.0,
-                                y as f64 / 8.0,
-                                world_z / 12.0
+                // PLAINS BIOME - Flat with gentle undulation
+                let plains_base = terrain_perlin.get([nx * 2.0, nz * 2.0]) * 3.0;
+                let plains_gentle = detail_perlin.get([nx * 4.0, nz * 4.0]) * 2.0;
+                let plains_height = 64.0 + plains_base + plains_gentle;
+
+                // VALLEY BIOME - Lower elevation, sometimes below sea level
+                let valley_base = terrain_perlin.get([nx * 1.0, nz * 1.0]) * 8.0;
+                let valley_depression = terrain_perlin.get([nx * 0.6, nz * 0.6]) * -12.0;
+                let valley_details = detail_perlin.get([nx * 3.5, nz * 3.5]) * 3.0;
+                let valley_height = 60.0 + valley_base + valley_depression + valley_details;
+
+                // === SMOOTH BIOME BLENDING ===
+                // Use smoothstep interpolation for gradual transitions between biomes
+                // Map biome_noise from [-1, 1] to blend factors
+
+                // Calculate blend weights using smooth transitions
+                let mountain_weight = smoothstep(0.2, 0.5, biome_noise);
+                let hills_weight = smoothstep(-0.1, 0.2, biome_noise) * (1.0 - mountain_weight);
+                let plains_weight = smoothstep(-0.4, 0.0, biome_noise) * (1.0 - mountain_weight - hills_weight);
+                let valley_weight = 1.0 - mountain_weight - hills_weight - plains_weight;
+
+                // Blend all biome heights together based on weights
+                let height = mountain_height * mountain_weight
+                    + hills_height * hills_weight
+                    + plains_height * plains_weight
+                    + valley_height * valley_weight;
+
+                // Add fine surface detail to all biomes
+                let surface_detail = detail_perlin.get([world_x / 8.0, world_z / 8.0]) * 1.5;
+                let final_height = (height + surface_detail).max(35.0).min(120.0);
+                let surface_height = final_height as i32;
+
+                // === FILL COLUMN WITH BLOCKS ===
+                for y in 0..CHUNK_HEIGHT {
+                    blocks[x][y][z] = if y < 3 {
+                        // Bedrock layer at the very bottom (Y 0-2)
+                        BlockType::Stone
+
+                    } else if y < surface_height as usize {
+                        let depth = surface_height as usize - y;
+
+                        // === CAVE GENERATION ===
+                        // Use 3D Perlin noise to create complex cave networks
+                        let cave_scale = 24.0;
+                        let cave_noise1 = cave_perlin.get([
+                            world_x / cave_scale,
+                            y as f64 / cave_scale,
+                            world_z / cave_scale
+                        ]);
+
+                        // Second octave for more complex cave shapes
+                        let cave_noise2 = cave_perlin.get([
+                            world_x / (cave_scale * 0.5) + 500.0,
+                            y as f64 / (cave_scale * 0.5),
+                            world_z / (cave_scale * 0.5) + 500.0
+                        ]);
+
+                        // Combine noise layers - caves where both are high
+                        let cave_value = cave_noise1 * 0.6 + cave_noise2 * 0.4;
+
+                        // Create larger caves at lower depths
+                        let depth_factor = ((y as f32 - 3.0) / 60.0).clamp(0.0, 1.0);
+                        let cave_threshold = 0.55 - (depth_factor * 0.15);
+
+                        // Carve caves, but protect surface and bedrock
+                        let is_cave = cave_value > cave_threshold.into() && y > 5 && depth > 4;
+
+                        // === SURFACE CAVES ===
+                        // Sometimes caves break through to the surface creating dramatic openings
+                        let surface_cave = if depth <= 4 && y > 50 {
+                            let surface_cave_noise = cave_perlin.get([
+                                world_x / 40.0,
+                                world_z / 40.0
                             ]);
+                            surface_cave_noise > 0.7
+                        } else {
+                            false
+                        };
 
-                            // Create caves where noise is high, but not near surface
-                            if cave_noise > 0.55 && y > 2 && depth > 5 {
-                                BlockType::Air
+                        if is_cave || surface_cave {
+                            BlockType::Air
+                        } else {
+                            // === SURFACE LAYER COMPOSITION ===
+                            if depth == 1 {
+                                // Top layer is grass
+                                BlockType::Grass
+                            } else if depth <= 5 {
+                                // Next 2-5 layers are dirt
+                                BlockType::Dirt
                             } else {
+                                // Everything deeper is stone
                                 BlockType::Stone
                             }
                         }
                     } else {
+                        // Above surface - air
                         BlockType::Air
                     };
                 }
@@ -244,7 +334,7 @@ impl Chunk {
     /// Get block at local chunk coordinates, returning Air if out of bounds
     fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
         if x < 0 || y < 0 || z < 0 ||
-            x >= CHUNK_SIZE as i32 || y >= CHUNK_SIZE as i32 || z >= CHUNK_SIZE as i32 {
+            x >= CHUNK_WIDTH as i32 || y >= CHUNK_HEIGHT as i32 || z >= CHUNK_WIDTH as i32 {
             return BlockType::Air;
         }
         self.blocks[x as usize][y as usize][z as usize]
@@ -257,9 +347,9 @@ impl Chunk {
         let mut indices = Vec::new();
 
         // Iterate through every block in the chunk
-        for x in 0..CHUNK_SIZE as i32 {
-            for y in 0..CHUNK_SIZE as i32 {
-                for z in 0..CHUNK_SIZE as i32 {
+        for x in 0..CHUNK_WIDTH as i32 {
+            for y in 0..CHUNK_HEIGHT as i32 {
+                for z in 0..CHUNK_WIDTH as i32 {
                     let block = self.get_block(x, y, z);
 
                     // Skip air blocks - nothing to render
