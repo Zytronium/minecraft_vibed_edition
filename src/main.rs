@@ -16,6 +16,8 @@ const CHUNK_SIZE: usize = 16;
 struct Vertex {
     position: [f32; 3],
     color: [f32; 3],
+    brightness: f32,
+    _padding: f32,
 }
 
 impl Vertex {
@@ -33,6 +35,11 @@ impl Vertex {
                     offset: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                     shader_location: 1,
                     format: wgpu::VertexFormat::Float32x3,
+                },
+                wgpu::VertexAttribute {
+                    offset: (std::mem::size_of::<[f32; 3]>() * 2) as wgpu::BufferAddress,
+                    shader_location: 2,
+                    format: wgpu::VertexFormat::Float32,
                 },
             ],
         }
@@ -199,42 +206,52 @@ impl Chunk {
 
 fn get_face_vertices(pos: [f32; 3], face: usize, color: [f32; 3]) -> [Vertex; 4] {
     let [x, y, z] = pos;
+
+    // Different brightness for different faces (like Minecraft)
+    let brightness = match face {
+        3 => 1.0,   // Top - brightest
+        4 | 5 => 0.8, // Front/Back - medium-bright
+        0 | 1 => 0.6, // Left/Right - medium-dark
+        2 => 0.5,   // Bottom - darkest
+        _ => 1.0,
+    };
+
     match face {
         0 => [ // Left (-X) - looking from left, CCW from bottom-left
-            Vertex { position: [x, y, z], color },
-            Vertex { position: [x, y, z + 1.0], color },
-            Vertex { position: [x, y + 1.0, z + 1.0], color },
-            Vertex { position: [x, y + 1.0, z], color },
+            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
         ],
         1 => [ // Right (+X) - looking from right, CCW from bottom-left
-            Vertex { position: [x + 1.0, y, z + 1.0], color },
-            Vertex { position: [x + 1.0, y, z], color },
-            Vertex { position: [x + 1.0, y + 1.0, z], color },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color },
+            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
         ],
         2 => [ // Bottom (-Y) - looking from bottom, CCW
-            Vertex { position: [x, y, z + 1.0], color },
-            Vertex { position: [x, y, z], color },
-            Vertex { position: [x + 1.0, y, z], color },
-            Vertex { position: [x + 1.0, y, z + 1.0], color },
+            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
         ],
         3 => [ // Top (+Y) - looking from top, CCW
-            Vertex { position: [x, y + 1.0, z], color },
-            Vertex { position: [x, y + 1.0, z + 1.0], color },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color },
-            Vertex { position: [x + 1.0, y + 1.0, z], color },
+            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
         ],
         4 => [ // Back (-Z) - looking from back, CCW
-            Vertex { position: [x, y, z], color },
-            Vertex { position: [x, y + 1.0, z], color },
-            Vertex { position: [x + 1.0, y + 1.0, z], color },
-            Vertex { position: [x + 1.0, y, z], color },
+            Vertex { position: [x, y, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y, z], color, brightness, _padding: 0.0 },
         ],
         5 => [ // Front (+Z) - looking from front, CCW
-            Vertex { position: [x + 1.0, y, z + 1.0], color },
-            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color },
-            Vertex { position: [x, y + 1.0, z + 1.0], color },
-            Vertex { position: [x, y, z + 1.0], color },
+            Vertex { position: [x + 1.0, y, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x + 1.0, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y + 1.0, z + 1.0], color, brightness, _padding: 0.0 },
+            Vertex { position: [x, y, z + 1.0], color, brightness, _padding: 0.0 },
         ],
         _ => unreachable!(),
     }
