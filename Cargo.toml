@@ -1,0 +1,12 @@
+[package]
+name = "minecraft_vibed_edition"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit = "0.30"
+wgpu = "23.0"
+glam = "0.29"
+bytemuck = { version = "1.14", features = ["derive"] }
+pollster = "0.4"
+env_logger = "0.11"
