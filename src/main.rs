@@ -2,6 +2,7 @@ mod block;
 mod camera;
 mod vertex;
 mod world;
+mod loading;
 
 use winit::{
     event::*,
@@ -16,6 +17,8 @@ use std::sync::Arc;
 use camera::Camera;
 use vertex::Vertex;
 use world::World;
+use loading::LoadingScreen;
+use std::sync::mpsc;
 
 /// Main rendering state - holds all GPU resources and game state
 struct State {
@@ -293,9 +296,62 @@ impl State {
             cache: None,
         });
 
-        // Generate world with all chunks and trees
-        let (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices) =
-            World::generate();
+        // Generate world with loading screen
+        println!("Generating world...");
+        let (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices) = {
+            // Create loading screen
+            let loading_screen = LoadingScreen::new(&device, &queue, config.format);
+
+            // Channels for progress updates and completion signal
+            let (progress_tx, progress_rx) = mpsc::channel();
+            let (done_tx, done_rx) = mpsc::channel();
+
+            // Spawn world generation in a separate thread
+            std::thread::spawn(move || {
+                let result = World::generate(move |current, total| {
+                    let _ = progress_tx.send((current, total));
+                });
+                let _ = done_tx.send(result);
+            });
+
+            // Render loading screen with progress updates
+            loop {
+                // Check for progress updates (non-blocking)
+                if let Ok((current, total)) = progress_rx.try_recv() {
+                    let progress = current as f32 / total as f32;
+                    loading_screen.update_progress(&queue, progress);
+                }
+
+                // Render the loading screen
+                match surface.get_current_texture() {
+                    Ok(output) => {
+                        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        loading_screen.render(&view, &device, &queue);
+                        output.present();
+                    }
+                    Err(wgpu::SurfaceError::Lost) => {
+                        surface.configure(&device, &config);
+                    }
+                    Err(e) => {
+                        eprintln!("Surface error during loading: {:?}", e);
+                    }
+                }
+
+                // Check if generation is complete (non-blocking)
+                if let Ok(result) = done_rx.try_recv() {
+                    // Render final loading screen at 100%
+                    loading_screen.update_progress(&queue, 1.0);
+                    if let Ok(output) = surface.get_current_texture() {
+                        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                        loading_screen.render(&view, &device, &queue);
+                        output.present();
+                    }
+                    break result;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(16)); // ~60fps
+            }
+        };
 
         println!("Generated {} opaque vertices, {} transparent vertices",
                  all_opaque_vertices.len(), all_transparent_vertices.len());
@@ -590,7 +646,7 @@ impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.state.is_none() {
             let window_attributes = Window::default_attributes()
-                .with_title("Minecraft: Fixed Transparency")
+                .with_title("Minecraft: Vibed Edition")
                 .with_inner_size(winit::dpi::LogicalSize::new(1280, 720));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());

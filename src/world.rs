@@ -73,17 +73,26 @@ impl World {
 
     /// Generate entire world with terrain and trees
     /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
-    pub fn generate() -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>) {
-        println!("Generating {}x{} chunks...", WORLD_SIZE_CHUNKS, WORLD_SIZE_CHUNKS);
+    /// progress_callback is called with (current_chunk, total_chunks) for progress updates
+    pub fn generate<F>(mut progress_callback: F) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
+    where
+        F: FnMut(usize, usize),
+    {
+        let total_chunks = (WORLD_SIZE_CHUNKS * WORLD_SIZE_CHUNKS) as usize;
 
         let mut world = World::new();
         let tree_perlin = Perlin::new(5555);
+
+        let mut current_chunk = 0;
 
         // First pass: Generate all chunks
         for chunk_x in 0..WORLD_SIZE_CHUNKS {
             for chunk_z in 0..WORLD_SIZE_CHUNKS {
                 let chunk = Chunk::new(chunk_x, chunk_z);
                 world.chunks.insert((chunk_x, chunk_z), chunk);
+
+                current_chunk += 1;
+                progress_callback(current_chunk, total_chunks);
             }
         }
 
@@ -119,12 +128,13 @@ impl World {
                             let mountain_weight = smoothstep(0.2, 0.5, biome_noise);
                             let plains_weight = smoothstep(-0.4, 0.0, biome_noise) * (1.0 - mountain_weight);
 
+                            // Made trees much less common (higher threshold = fewer trees)
                             let tree_density = if mountain_weight > 0.5 {
-                                0.85  // Sparse trees in mountains
+                                0.92  // Very sparse trees in mountains
                             } else if plains_weight > 0.5 {
-                                0.75  // More trees in plains
+                                0.88  // Less common in plains
                             } else {
-                                0.78  // Medium density in other biomes
+                                0.90  // Less common in other biomes
                             };
 
                             if tree_noise > tree_density {
