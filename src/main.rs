@@ -20,6 +20,16 @@ use world::World;
 use loading::LoadingScreen;
 use std::sync::mpsc;
 
+// Embed all textures at compile time
+const GRASS_TOP: &[u8] = include_bytes!("../assets/textures/grass_top.png");
+const GRASS_BOTTOM: &[u8] = include_bytes!("../assets/textures/grass_bottom.png");
+const GRASS_SIDE: &[u8] = include_bytes!("../assets/textures/grass_side.png");
+const DIRT: &[u8] = include_bytes!("../assets/textures/dirt.png");
+const STONE: &[u8] = include_bytes!("../assets/textures/stone.png");
+const LOG_TOP_BOTTOM: &[u8] = include_bytes!("../assets/textures/log_top-bottom.png");
+const LOG_SIDE: &[u8] = include_bytes!("../assets/textures/log_side.png");
+const LEAVES: &[u8] = include_bytes!("../assets/textures/leaves.png");
+
 /// Main rendering state - holds all GPU resources and game state
 struct State {
     surface: wgpu::Surface<'static>,
@@ -96,20 +106,20 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // Load all block textures - ORDER MATTERS! Must match BlockType::get_texture_indices()
-        let texture_paths = [
-            "assets/textures/grass_top.png",
-            "assets/textures/grass_bottom.png",
-            "assets/textures/grass_side.png",
-            "assets/textures/dirt.png",
-            "assets/textures/stone.png",
-            "assets/textures/log_top-bottom.png",
-            "assets/textures/log_side.png",
-            "assets/textures/leaves.png",
+        // Load all block textures from embedded bytes - ORDER MATTERS! Must match BlockType::get_texture_indices()
+        let texture_data = [
+            (GRASS_TOP, "grass_top"),
+            (GRASS_BOTTOM, "grass_bottom"),
+            (GRASS_SIDE, "grass_side"),
+            (DIRT, "dirt"),
+            (STONE, "stone"),
+            (LOG_TOP_BOTTOM, "log_top_bottom"),
+            (LOG_SIDE, "log_side"),
+            (LEAVES, "leaves"),
         ];
 
-        let textures: Vec<_> = texture_paths.iter()
-            .map(|path| load_texture(&device, &queue, path))
+        let textures: Vec<_> = texture_data.iter()
+            .map(|(bytes, label)| load_texture_from_bytes(&device, &queue, bytes, label))
             .collect();
 
         let texture_views: Vec<_> = textures.iter()
@@ -612,9 +622,11 @@ impl State {
     }
 }
 
-/// Load a texture from disk and upload to GPU
-fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> wgpu::Texture {
-    let img = image::open(path).unwrap().to_rgba8();
+/// Load a texture from embedded bytes and upload to GPU
+fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> wgpu::Texture {
+    let img = image::load_from_memory(bytes)
+        .unwrap_or_else(|e| panic!("Failed to load texture {}: {}", label, e))
+        .to_rgba8();
     let dimensions = img.dimensions();
 
     let size = wgpu::Extent3d {
@@ -624,7 +636,7 @@ fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> wgpu:
     };
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(path),
+        label: Some(label),
         size,
         mip_level_count: 1,
         sample_count: 1,

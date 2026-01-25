@@ -1,3 +1,6 @@
+// Embed dirt texture at compile time
+const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
+
 /// Simple vertex for 2D quad rendering (for loading screen)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -44,8 +47,8 @@ pub struct LoadingScreen {
 
 impl LoadingScreen {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        // Load dirt texture for background
-        let dirt_texture = load_texture(device, queue, "assets/textures/dirt.png");
+        // Load dirt texture from embedded bytes for background
+        let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "dirt");
         let dirt_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Create white 1x1 texture for solid color rendering
@@ -389,9 +392,11 @@ fn create_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Tex
     texture
 }
 
-/// Load a texture from disk
-fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> wgpu::Texture {
-    let img = image::open(path).unwrap().to_rgba8();
+/// Load a texture from embedded bytes
+fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> wgpu::Texture {
+    let img = image::load_from_memory(bytes)
+        .unwrap_or_else(|e| panic!("Failed to load texture {}: {}", label, e))
+        .to_rgba8();
     let dimensions = img.dimensions();
 
     let size = wgpu::Extent3d {
@@ -401,7 +406,7 @@ fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, path: &str) -> wgpu:
     };
 
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some(path),
+        label: Some(label),
         size,
         mip_level_count: 1,
         sample_count: 1,
