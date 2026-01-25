@@ -1,19 +1,59 @@
-// Embed dirt texture at compile time
+/// Menu state for world size selection
+pub struct MainMenu {
+    pipeline: wgpu::RenderPipeline,
+    white_bind_group: wgpu::BindGroup,
+    dirt_bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    selected_option: usize,
+}
+
+#[derive(Clone, Copy)]
+pub enum WorldSize {
+    Small,      // 8x8 chunks
+    Medium,     // 16x16 chunks
+    Large,      // 32x32 chunks
+    Enormous,   // 64x64 chunks
+    Overkill,   // 1024x1024 chunks
+}
+
+impl WorldSize {
+    pub fn get_chunks(&self) -> i32 {
+        match self {
+            WorldSize::Small => 8,
+            WorldSize::Medium => 16,
+            WorldSize::Large => 32,
+            WorldSize::Enormous => 64,
+            WorldSize::Overkill => 1024,
+        }
+    }
+
+    pub fn from_index(index: usize) -> Self {
+        match index {
+            0 => WorldSize::Small,
+            1 => WorldSize::Medium,
+            2 => WorldSize::Large,
+            3 => WorldSize::Enormous,
+            4 => WorldSize::Overkill,
+            _ => WorldSize::Medium,
+        }
+    }
+}
+
 const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
 
-/// Simple vertex for 2D quad rendering (for loading screen)
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
-struct QuadVertex {
+struct MenuVertex {
     position: [f32; 2],
     tex_coords: [f32; 2],
     color: [f32; 4],
 }
 
-impl QuadVertex {
+impl MenuVertex {
     fn desc() -> wgpu::VertexBufferLayout<'static> {
         wgpu::VertexBufferLayout {
-            array_stride: std::mem::size_of::<QuadVertex>() as wgpu::BufferAddress,
+            array_stride: std::mem::size_of::<MenuVertex>() as wgpu::BufferAddress,
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &[
                 wgpu::VertexAttribute {
@@ -36,22 +76,13 @@ impl QuadVertex {
     }
 }
 
-/// Loading screen renderer
-pub struct LoadingScreen {
-    pipeline: wgpu::RenderPipeline,
-    dirt_bind_group: wgpu::BindGroup,
-    white_bind_group: wgpu::BindGroup,
-    vertex_buffer: wgpu::Buffer,
-    index_buffer: wgpu::Buffer,
-}
-
-impl LoadingScreen {
+impl MainMenu {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        // Load dirt texture from embedded bytes for background
-        let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "dirt");
+        // Load dirt texture for background
+        let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "menu_dirt");
         let dirt_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Create white 1x1 texture for solid color rendering
+        // Create white texture for solid colors
         let white_texture = create_white_texture(device, queue);
         let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -84,7 +115,7 @@ impl LoadingScreen {
                     count: None,
                 },
             ],
-            label: Some("loading_texture_bind_group_layout"),
+            label: Some("menu_texture_bind_group_layout"),
         });
 
         let dirt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -99,7 +130,7 @@ impl LoadingScreen {
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
-            label: Some("dirt_bind_group"),
+            label: Some("menu_dirt_bind_group"),
         });
 
         let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -114,27 +145,27 @@ impl LoadingScreen {
                     resource: wgpu::BindingResource::Sampler(&sampler),
                 },
             ],
-            label: Some("white_bind_group"),
+            label: Some("menu_white_bind_group"),
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("Loading Shader"),
+            label: Some("Menu Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("loading.wgsl").into()),
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Loading Pipeline Layout"),
+            label: Some("Menu Pipeline Layout"),
             bind_group_layouts: &[&texture_bind_group_layout],
             push_constant_ranges: &[],
         });
 
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Loading Pipeline"),
+            label: Some("Menu Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_main"),
-                buffers: &[QuadVertex::desc()],
+                buffers: &[MenuVertex::desc()],
                 compilation_options: Default::default(),
             },
             fragment: Some(wgpu::FragmentState {
@@ -162,19 +193,17 @@ impl LoadingScreen {
             cache: None,
         });
 
-        // Create buffers - large enough for all geometry
-        // Max: background(4) + "Generating World..."(~18*4=72) + progress text(~7*4=28) + bar(8) = ~112 vertices
-        let max_vertices = 150;
+        let max_vertices = 1000;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Loading Vertex Buffer"),
-            size: (max_vertices * std::mem::size_of::<QuadVertex>()) as u64,
+            label: Some("Menu Vertex Buffer"),
+            size: (max_vertices * std::mem::size_of::<MenuVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let max_indices = 300;
+        let max_indices = 2000;
         let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("Loading Index Buffer"),
+            label: Some("Menu Index Buffer"),
             size: (max_indices * std::mem::size_of::<u32>()) as u64,
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
@@ -182,37 +211,50 @@ impl LoadingScreen {
 
         Self {
             pipeline,
-            dirt_bind_group,
             white_bind_group,
+            dirt_bind_group,
             vertex_buffer,
             index_buffer,
+            selected_option: 1, // Default to Medium
         }
     }
 
-    /// Update the progress bar (progress from 0.0 to 1.0, current chunk number, total chunks)
-    pub fn update_progress(&self, queue: &wgpu::Queue, progress: f32, chunk_num: usize, total_chunks: usize) -> usize {
-        let (vertices, indices) = create_loading_geometry(progress, chunk_num, total_chunks);
+    pub fn move_selection_up(&mut self) {
+        if self.selected_option > 0 {
+            self.selected_option -= 1;
+        }
+    }
+
+    pub fn move_selection_down(&mut self) {
+        if self.selected_option < 4 {
+            self.selected_option += 1;
+        }
+    }
+
+    pub fn get_selected_size(&self) -> WorldSize {
+        WorldSize::from_index(self.selected_option)
+    }
+
+    pub fn update_geometry(&self, queue: &wgpu::Queue) -> usize {
+        let (vertices, indices) = create_menu_geometry(self.selected_option);
         queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
         indices.len()
     }
 
-    /// Render the loading screen
     pub fn render(&self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, num_indices: usize) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
-            label: Some("Loading Render Encoder"),
+            label: Some("Menu Render Encoder"),
         });
 
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Loading Render Pass"),
+                label: Some("Menu Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0, g: 0.0, b: 0.0, a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -225,11 +267,11 @@ impl LoadingScreen {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-            // Draw background with dirt texture (first 6 indices)
+            // Draw background with dirt texture
             render_pass.set_bind_group(0, &self.dirt_bind_group, &[]);
             render_pass.draw_indexed(0..6, 0, 0..1);
 
-            // Draw everything else with white texture (for solid colors)
+            // Draw UI elements with white texture
             if num_indices > 6 {
                 render_pass.set_bind_group(0, &self.white_bind_group, &[]);
                 render_pass.draw_indexed(6..num_indices as u32, 0, 0..1);
@@ -240,127 +282,158 @@ impl LoadingScreen {
     }
 }
 
-/// Create geometry for the loading screen with progress bar and text
-fn create_loading_geometry(progress: f32, chunk_num: usize, total_chunks: usize) -> (Vec<QuadVertex>, Vec<u32>) {
+fn create_menu_geometry(selected_index: usize) -> (Vec<MenuVertex>, Vec<u32>) {
     let mut vertices = Vec::new();
     let mut indices = Vec::new();
 
-    // Background (tiled dirt texture) - FIRST so it uses dirt bind group
+    // Background
     let bg_verts = [
-        QuadVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-        QuadVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-        QuadVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-        QuadVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+        MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
+        MenuVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
+        MenuVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+        MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
     ];
-
     let base = vertices.len() as u32;
     vertices.extend_from_slice(&bg_verts);
     indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
 
-    // ALL GEOMETRY BELOW THIS USES WHITE TEXTURE (solid colors via vertex color)
+    // Title: "Minecraft: Vibed Edition"
+    let title = "Minecraft: Vibed Edition";
+    let char_width = 0.028;
+    let char_height = 0.045;
+    let title_y = 0.6;
+    let title_width = title.len() as f32 * char_width;
+    let start_x = -title_width / 2.0;
 
-    // "Generating World..." text (simple block letters)
-    let text = "Generating World...";
-    let char_width = 0.035;
-    let char_height = 0.05;
-    let text_y = 0.15;
-    let text_width = text.len() as f32 * char_width;
-    let start_x = -text_width / 2.0;
-
-    for (i, c) in text.chars().enumerate() {
-        if c == ' ' {
+    for (i, c) in title.chars().enumerate() {
+        if c == ' ' || c == ':' {
             continue;
         }
-
         let x = start_x + i as f32 * char_width;
-        let width = if c == '.' { char_width * 0.3 } else { char_width * 0.8 };
+        let width = char_width * 0.8;
 
-        // White rectangles for letters
-        let char_verts = [
-            QuadVertex { position: [x, text_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            QuadVertex { position: [x + width, text_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            QuadVertex { position: [x + width, text_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            QuadVertex { position: [x, text_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+        let verts = [
+            MenuVertex { position: [x, title_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [x + width, title_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [x + width, title_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [x, title_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
         ];
-
         let base = vertices.len() as u32;
-        vertices.extend_from_slice(&char_verts);
+        vertices.extend_from_slice(&verts);
         indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
     }
 
-    // Progress text (e.g., "128/256")
-    let progress_text = format!("{}/{}", chunk_num, total_chunks);
-    let progress_y = 0.03;
-    let progress_text_width = progress_text.len() as f32 * char_width * 0.6;
-    let progress_start_x = -progress_text_width / 2.0;
+    // Subtitle
+    let subtitle = "Select World Size";
+    let subtitle_y = 0.45;
+    let subtitle_width = subtitle.len() as f32 * char_width * 0.7;
+    let subtitle_x = -subtitle_width / 2.0;
 
-    for (i, c) in progress_text.chars().enumerate() {
+    for (i, c) in subtitle.chars().enumerate() {
         if c == ' ' {
             continue;
         }
+        let x = subtitle_x + i as f32 * char_width * 0.7;
+        let width = char_width * 0.6;
 
-        let x = progress_start_x + i as f32 * char_width * 0.6;
-        let width = if c == '/' { char_width * 0.4 } else { char_width * 0.5 };
-
-        let char_verts = [
-            QuadVertex { position: [x, progress_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.9, 0.9, 0.9, 1.0] },
-            QuadVertex { position: [x + width, progress_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.9, 0.9, 0.9, 1.0] },
-            QuadVertex { position: [x + width, progress_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.9, 0.9, 0.9, 1.0] },
-            QuadVertex { position: [x, progress_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.9, 0.9, 0.9, 1.0] },
+        let verts = [
+            MenuVertex { position: [x, subtitle_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
+            MenuVertex { position: [x + width, subtitle_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
+            MenuVertex { position: [x + width, subtitle_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
+            MenuVertex { position: [x, subtitle_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
         ];
-
         let base = vertices.len() as u32;
-        vertices.extend_from_slice(&char_verts);
+        vertices.extend_from_slice(&verts);
         indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
     }
 
-    // Progress bar background (dark gray)
-    let bar_width = 0.6;
-    let bar_height = 0.04;
-    let bar_y = -0.1;
-
-    let bar_bg_verts = [
-        QuadVertex { position: [-bar_width, bar_y - bar_height], tex_coords: [0.0, 0.0], color: [0.2, 0.2, 0.2, 0.95] },
-        QuadVertex { position: [ bar_width, bar_y - bar_height], tex_coords: [0.0, 0.0], color: [0.2, 0.2, 0.2, 0.95] },
-        QuadVertex { position: [ bar_width, bar_y + bar_height], tex_coords: [0.0, 0.0], color: [0.2, 0.2, 0.2, 0.95] },
-        QuadVertex { position: [-bar_width, bar_y + bar_height], tex_coords: [0.0, 0.0], color: [0.2, 0.2, 0.2, 0.95] },
+    // Menu options
+    let options = [
+        "Small (8x8 chunks)",
+        "Medium (16x16 chunks)",
+        "Large (32x32 chunks)",
+        "Enormous (64x64 chunks)",
+        "Overkill (1024x1024 chunks)",
     ];
 
-    let base = vertices.len() as u32;
-    vertices.extend_from_slice(&bar_bg_verts);
-    indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+    let option_start_y = 0.2;
+    let option_spacing = 0.12;
 
-    // Progress bar fill (bright green)
-    let padding = 0.005;
-    if progress > 0.01 {
-        let fill_width = (bar_width - padding) * progress.min(1.0);
+    for (idx, option) in options.iter().enumerate() {
+        let y = option_start_y - idx as f32 * option_spacing;
+        let is_selected = idx == selected_index;
 
-        let bar_fill_verts = [
-            QuadVertex { position: [-bar_width + padding, bar_y - bar_height + padding], tex_coords: [0.0, 0.0], color: [0.2, 0.9, 0.2, 1.0] },
-            QuadVertex { position: [-bar_width + padding + fill_width, bar_y - bar_height + padding], tex_coords: [0.0, 0.0], color: [0.2, 0.9, 0.2, 1.0] },
-            QuadVertex { position: [-bar_width + padding + fill_width, bar_y + bar_height - padding], tex_coords: [0.0, 0.0], color: [0.2, 0.9, 0.2, 1.0] },
-            QuadVertex { position: [-bar_width + padding, bar_y + bar_height - padding], tex_coords: [0.0, 0.0], color: [0.2, 0.9, 0.2, 1.0] },
+        // Selection highlight
+        if is_selected {
+            let highlight_width = 0.5;
+            let highlight_height = 0.055;
+            let highlight_verts = [
+                MenuVertex { position: [-highlight_width, y - highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
+                MenuVertex { position: [ highlight_width, y - highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
+                MenuVertex { position: [ highlight_width, y + highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
+                MenuVertex { position: [-highlight_width, y + highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
+            ];
+            let base = vertices.len() as u32;
+            vertices.extend_from_slice(&highlight_verts);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+
+        // Option text
+        let color = if is_selected { [1.0, 1.0, 0.0, 1.0] } else { [0.9, 0.9, 0.9, 1.0] };
+        let text_width = option.len() as f32 * char_width * 0.6;
+        let text_x = -text_width / 2.0;
+
+        for (i, c) in option.chars().enumerate() {
+            if c == ' ' || c == '(' || c == ')' {
+                continue;
+            }
+            let x = text_x + i as f32 * char_width * 0.6;
+            let width = char_width * 0.5;
+
+            let verts = [
+                MenuVertex { position: [x, y - char_height * 0.35], tex_coords: [0.0, 0.0], color },
+                MenuVertex { position: [x + width, y - char_height * 0.35], tex_coords: [0.0, 0.0], color },
+                MenuVertex { position: [x + width, y + char_height * 0.35], tex_coords: [0.0, 0.0], color },
+                MenuVertex { position: [x, y + char_height * 0.35], tex_coords: [0.0, 0.0], color },
+            ];
+            let base = vertices.len() as u32;
+            vertices.extend_from_slice(&verts);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+    }
+
+    // Instructions
+    let instructions = "Use arrow keys, then press ENTER";
+    let instr_y = -0.6;
+    let instr_width = instructions.len() as f32 * char_width * 0.5;
+    let instr_x = -instr_width / 2.0;
+
+    for (i, c) in instructions.chars().enumerate() {
+        if c == ' ' || c == ',' {
+            continue;
+        }
+        let x = instr_x + i as f32 * char_width * 0.5;
+        let width = char_width * 0.4;
+
+        let verts = [
+            MenuVertex { position: [x, instr_y - char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
+            MenuVertex { position: [x + width, instr_y - char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
+            MenuVertex { position: [x + width, instr_y + char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
+            MenuVertex { position: [x, instr_y + char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
         ];
-
         let base = vertices.len() as u32;
-        vertices.extend_from_slice(&bar_fill_verts);
+        vertices.extend_from_slice(&verts);
         indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
     }
 
     (vertices, indices)
 }
 
-/// Create a 1x1 white texture for solid color rendering
 fn create_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    let data = [255u8, 255, 255, 255]; // White pixel
-
+    let data = [255u8, 255, 255, 255];
     let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("White Texture"),
-        size: wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
+        label: Some("Menu White Texture"),
+        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -382,17 +455,12 @@ fn create_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Tex
             bytes_per_row: Some(4),
             rows_per_image: Some(1),
         },
-        wgpu::Extent3d {
-            width: 1,
-            height: 1,
-            depth_or_array_layers: 1,
-        },
+        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
     );
 
     texture
 }
 
-/// Load a texture from embedded bytes
 fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> wgpu::Texture {
     let img = image::load_from_memory(bytes)
         .unwrap_or_else(|e| panic!("Failed to load texture {}: {}", label, e))

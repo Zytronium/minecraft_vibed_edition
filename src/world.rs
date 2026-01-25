@@ -7,9 +7,6 @@ use crate::vertex::{Vertex, get_face_vertices};
 pub const CHUNK_WIDTH: usize = 16;   // Horizontal size (X and Z)
 pub const CHUNK_HEIGHT: usize = 128; // Vertical size (Y) - like Minecraft 1.18+
 
-// Number of chunks in each horizontal direction (16x16 = 256 total chunks)
-pub const WORLD_SIZE_CHUNKS: i32 = 16;
-
 /// A 16x128x16 section of the world
 pub struct Chunk {
     blocks: [[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
@@ -74,11 +71,11 @@ impl World {
     /// Generate entire world with terrain and trees
     /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
     /// progress_callback is called with (current_chunk, total_chunks) for progress updates
-    pub fn generate<F>(mut progress_callback: F) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
+    pub fn generate<F>(world_size_chunks: i32, mut progress_callback: F) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
     where
         F: FnMut(usize, usize),
     {
-        let total_chunks = (WORLD_SIZE_CHUNKS * WORLD_SIZE_CHUNKS) as usize;
+        let total_chunks = (world_size_chunks * world_size_chunks) as usize;
 
         let mut world = World::new();
         let tree_perlin = Perlin::new(5555);
@@ -86,8 +83,8 @@ impl World {
         let mut current_chunk = 0;
 
         // First pass: Generate all chunks
-        for chunk_x in 0..WORLD_SIZE_CHUNKS {
-            for chunk_z in 0..WORLD_SIZE_CHUNKS {
+        for chunk_x in 0..world_size_chunks {
+            for chunk_z in 0..world_size_chunks {
                 let chunk = Chunk::new(chunk_x, chunk_z);
                 world.chunks.insert((chunk_x, chunk_z), chunk);
 
@@ -97,8 +94,8 @@ impl World {
         }
 
         // Second pass: Generate trees (can now span chunk boundaries)
-        for chunk_x in 0..WORLD_SIZE_CHUNKS {
-            for chunk_z in 0..WORLD_SIZE_CHUNKS {
+        for chunk_x in 0..world_size_chunks {
+            for chunk_z in 0..world_size_chunks {
                 let world_offset_x = chunk_x * CHUNK_WIDTH as i32;
                 let world_offset_z = chunk_z * CHUNK_WIDTH as i32;
 
@@ -153,8 +150,8 @@ impl World {
         let mut all_transparent_vertices = Vec::new();
         let mut all_transparent_indices = Vec::new();
 
-        for chunk_x in 0..WORLD_SIZE_CHUNKS {
-            for chunk_z in 0..WORLD_SIZE_CHUNKS {
+        for chunk_x in 0..world_size_chunks {
+            for chunk_z in 0..world_size_chunks {
                 if let Some(chunk) = world.chunks.get(&(chunk_x, chunk_z)) {
                     let (opaque_verts, opaque_idx, trans_verts, trans_idx) = chunk.generate_mesh(&world);
 

@@ -3,6 +3,7 @@ mod camera;
 mod vertex;
 mod world;
 mod loading;
+mod menu;
 
 use winit::{
     event::*,
@@ -18,6 +19,7 @@ use camera::Camera;
 use vertex::Vertex;
 use world::World;
 use loading::LoadingScreen;
+use menu::{MainMenu, WorldSize};
 use std::sync::mpsc;
 
 // Embed all textures at compile time
@@ -56,7 +58,7 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>) -> Self {
+    async fn new(window: Arc<Window>, world_size: WorldSize) -> Self {
         let size = window.inner_size();
 
         // Create WebGPU instance
@@ -177,7 +179,7 @@ impl State {
         });
 
         // Initialize camera
-        let camera = Camera::new(size.width as f32 / size.height as f32);
+        let camera = Camera::new(size.width as f32 / size.height as f32, world_size.get_chunks());
 
         // Create buffer to hold camera matrix on GPU
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -316,9 +318,11 @@ impl State {
             let (progress_tx, progress_rx) = mpsc::channel();
             let (done_tx, done_rx) = mpsc::channel();
 
+            let world_size_chunks = world_size.get_chunks();
+
             // Spawn world generation in a separate thread
             std::thread::spawn(move || {
-                let result = World::generate(move |current, total| {
+                let result = World::generate(world_size_chunks, move |current, total| {
                     let _ = progress_tx.send((current, total));
                 });
                 let _ = done_tx.send(result);
@@ -334,7 +338,7 @@ impl State {
                 // Update progress from background thread
                 while let Ok((current, total)) = progress_rx.try_recv() {
                     let progress = current as f32 / total as f32;
-                    num_indices = loading_screen.update_progress(&queue, progress, current);
+                    num_indices = loading_screen.update_progress(&queue, progress, current, total);
                 }
 
                 // Limit render rate to 60fps to reduce CPU usage
@@ -364,7 +368,8 @@ impl State {
                 // Check if generation is complete
                 if let Ok(result) = done_rx.try_recv() {
                     // Render final loading screen at 100%
-                    num_indices = loading_screen.update_progress(&queue, 1.0, 256);
+                    let total_chunks = (world_size_chunks * world_size_chunks) as usize;
+                    num_indices = loading_screen.update_progress(&queue, 1.0, total_chunks, total_chunks);
                     if let Ok(output) = surface.get_current_texture() {
                         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
                         loading_screen.render(&view, &device, &queue, num_indices);
@@ -666,28 +671,151 @@ fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[
 }
 
 /// Application state for winit event loop
+enum GameState {
+    Menu,
+    Playing,
+}
+
+struct MenuContext {
+    surface: wgpu::Surface<'static>,
+    device: wgpu::Device,
+    queue: wgpu::Queue,
+    config: wgpu::SurfaceConfiguration,
+    window: Arc<Window>,
+}
+
 struct App {
     state: Option<State>,
+    menu: Option<MainMenu>,
+    menu_ctx: Option<MenuContext>,
+    game_state: GameState,
     last_render_time: std::time::Instant,
 }
 
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_none() {
+        if self.state.is_none() && self.menu.is_none() {
             let window_attributes = Window::default_attributes()
                 .with_title("Minecraft: Vibed Edition")
                 .with_inner_size(winit::dpi::LogicalSize::new(1280, 720));
 
             let window = Arc::new(event_loop.create_window(window_attributes).unwrap());
-            self.state = Some(pollster::block_on(State::new(window)));
+
+            // Create temporary GPU context for menu
+            let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                backends: wgpu::Backends::all(),
+                ..Default::default()
+            });
+            let surface = instance.create_surface(window.clone()).unwrap();
+            let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::default(),
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })).unwrap();
+
+            let (device, queue) = pollster::block_on(adapter.request_device(
+                &wgpu::DeviceDescriptor {
+                    label: None,
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )).unwrap();
+
+            let size = window.inner_size();
+            let surface_caps = surface.get_capabilities(&adapter);
+            let surface_format = surface_caps.formats.iter()
+                .find(|f| f.is_srgb())
+                .copied()
+                .unwrap_or(surface_caps.formats[0]);
+
+            let config = wgpu::SurfaceConfiguration {
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                format: surface_format,
+                width: size.width,
+                height: size.height,
+                present_mode: surface_caps.present_modes[0],
+                alpha_mode: surface_caps.alpha_modes[0],
+                view_formats: vec![],
+                desired_maximum_frame_latency: 2,
+            };
+            surface.configure(&device, &config);
+
+            let menu = MainMenu::new(&device, &queue, surface_format);
+            let num_indices = menu.update_geometry(&queue);
+
+            // Render initial menu
+            if let Ok(output) = surface.get_current_texture() {
+                let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                menu.render(&view, &device, &queue, num_indices);
+                output.present();
+            }
+
+            self.menu = Some(menu);
+            self.menu_ctx = Some(MenuContext {
+                surface,
+                device,
+                queue,
+                config,
+                window,
+            });
         }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: winit::window::WindowId, event: WindowEvent) {
+        match self.game_state {
+            GameState::Menu => {
+                if let Some(menu) = &mut self.menu {
+                    match event {
+                        WindowEvent::CloseRequested => event_loop.exit(),
+                        WindowEvent::KeyboardInput {
+                            event: KeyEvent {
+                                physical_key: PhysicalKey::Code(key),
+                                state: ElementState::Pressed,
+                                ..
+                            },
+                            ..
+                        } => {
+                            match key {
+                                KeyCode::ArrowUp => menu.move_selection_up(),
+                                KeyCode::ArrowDown => menu.move_selection_down(),
+                                KeyCode::Enter => {
+                                    // Start world generation
+                                    let selected_size = menu.get_selected_size();
+                                    println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
+
+                                    if let Some(ctx) = self.menu_ctx.take() {
+                                        self.state = Some(pollster::block_on(State::new(ctx.window, selected_size)));
+                                        self.menu = None;
+                                        self.game_state = GameState::Playing;
+                                    }
+
+                                    return;
+                                }
+                                KeyCode::Escape => event_loop.exit(),
+                                _ => {}
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            GameState::Playing => {
         if let Some(state) = &mut self.state {
             if !state.input(&event) {
                 match event {
                     WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::RedrawRequested => {
+                        if let (Some(menu), Some(ctx)) = (&self.menu, &self.menu_ctx) {
+                            let num_indices = menu.update_geometry(&ctx.queue);
+                            if let Ok(output) = ctx.surface.get_current_texture() {
+                                let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                menu.render(&view, &ctx.device, &ctx.queue, num_indices);
+                                output.present();
+                            }
+                        }
+                    }
                     WindowEvent::Resized(physical_size) => {
                         state.resize(physical_size);
                     }
@@ -713,10 +841,21 @@ impl ApplicationHandler for App {
             }
         }
     }
+        }
+    }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        match self.game_state {
+            GameState::Playing => {
         if let Some(state) = &self.state {
             state.window.request_redraw();
+        }
+    }
+            GameState::Menu => {
+                if let Some(ctx) = &self.menu_ctx {
+                    ctx.window.request_redraw();
+                }
+            }
         }
     }
 }
@@ -727,6 +866,9 @@ fn main() {
 
     let mut app = App {
         state: None,
+        menu: None,
+        menu_ctx: None,
+        game_state: GameState::Menu,
         last_render_time: std::time::Instant::now(),
     };
 

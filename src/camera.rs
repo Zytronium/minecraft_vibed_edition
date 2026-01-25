@@ -1,5 +1,5 @@
 use glam::{Mat4, Vec3};
-use crate::world::{CHUNK_WIDTH, WORLD_SIZE_CHUNKS};
+use crate::world::CHUNK_WIDTH;
 
 /// First-person camera for navigating the world
 pub struct Camera {
@@ -13,13 +13,13 @@ pub struct Camera {
 }
 
 impl Camera {
-    pub fn new(aspect: f32) -> Self {
+    pub fn new(aspect: f32, world_size_chunks: i32) -> Self {
         Self {
             // Start camera in the middle of the world, elevated above terrain
             position: Vec3::new(
-                (WORLD_SIZE_CHUNKS * CHUNK_WIDTH as i32 / 2) as f32,
+                (world_size_chunks * CHUNK_WIDTH as i32 / 2) as f32,
                 80.0,  // Above the surface (surface is around Y 64)
-                (WORLD_SIZE_CHUNKS * CHUNK_WIDTH as i32 / 2) as f32
+                (world_size_chunks * CHUNK_WIDTH as i32 / 2) as f32
             ),
             yaw: -90.0_f32.to_radians(),  // Face forward (negative Z)
             pitch: 0.0,
