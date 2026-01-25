@@ -8,7 +8,7 @@ use winit::{
 use wgpu::util::DeviceExt;
 use glam::{Mat4, Vec3};
 use std::sync::Arc;
-use noise::{NoiseFn, Perlin, Seedable};
+use noise::{NoiseFn, Perlin};
 
 // Chunk dimensions
 const CHUNK_WIDTH: usize = 16;   // Horizontal size (X and Z)
@@ -134,10 +134,12 @@ impl Camera {
 /// Different types of blocks in the world
 #[derive(Clone, Copy, PartialEq)]
 enum BlockType {
-    Air,    // Empty space (not rendered)
-    Grass,  // Grass block with different textures per face
-    Dirt,   // Dirt block
-    Stone,  // Stone block
+    Air,     // Empty space (not rendered)
+    Grass,   // Grass block with different textures per face
+    Dirt,    // Dirt block
+    Stone,   // Stone block
+    Log,     // Tree log with bark on sides, rings on top/bottom
+    Leaves,  // Tree leaves - semi-transparent foliage
 }
 
 impl BlockType {
@@ -153,8 +155,15 @@ impl BlockType {
                     _ => 2, // Side faces use grass_side.png
                 }
             }
-            BlockType::Dirt => 3,  // All faces use dirt.png
-            BlockType::Stone => 4, // All faces use stone.png
+            BlockType::Dirt => 3,   // All faces use dirt.png
+            BlockType::Stone => 4,  // All faces use stone.png
+            BlockType::Log => {
+                match face {
+                    2 | 3 => 5, // Top and bottom faces use log_top-bottom.png (rings)
+                    _ => 6,     // Side faces use log_side.png (bark)
+                }
+            }
+            BlockType::Leaves => 7, // All faces use leaves.png
         }
     }
 }
@@ -183,6 +192,7 @@ impl Chunk {
         let biome_perlin = Perlin::new(1337);      // Biome selection
         let cave_perlin = Perlin::new(9999);       // 3D cave system
         let detail_perlin = Perlin::new(7777);     // Fine surface details
+        let tree_perlin = Perlin::new(5555);       // Tree placement
 
         // World offset for this chunk
         let world_offset_x = chunk_x * CHUNK_WIDTH as i32;
@@ -204,8 +214,8 @@ impl Chunk {
                 let biome_noise = biome_perlin.get([nx * 0.3, nz * 0.3]);
 
                 // Temperature and moisture create different biome types
-                let temperature = biome_perlin.get([nx * 0.5, nz * 0.5]);
-                let moisture = biome_perlin.get([nx * 0.5 + 100.0, nz * 0.5 + 100.0]);
+                // let temperature = biome_perlin.get([nx * 0.5, nz * 0.5]);
+                // let moisture = biome_perlin.get([nx * 0.5 + 100.0, nz * 0.5 + 100.0]);
 
                 // === TERRAIN HEIGHT GENERATION ===
                 // Generate height for each biome type independently
@@ -321,6 +331,69 @@ impl Chunk {
                         BlockType::Air
                     };
                 }
+
+                // === TREE GENERATION ===
+                // Only place trees on grass blocks at appropriate elevations
+                let surface_block = blocks[x][surface_height as usize - 1][z];
+                if surface_block == BlockType::Grass && surface_height > 50 && surface_height < 100 {
+                    // Use noise to randomly place trees (higher values = tree spawn)
+                    let tree_noise = tree_perlin.get([world_x / 4.0, world_z / 4.0]);
+
+                    // Trees are less common in mountains, more common in plains/hills
+                    let tree_density = if mountain_weight > 0.5 {
+                        0.85  // Sparse trees in mountains
+                    } else if plains_weight > 0.5 {
+                        0.75  // More trees in plains
+                    } else {
+                        0.78  // Medium density in other biomes
+                    };
+
+                    if tree_noise > tree_density {
+                        // Generate a simple tree (4-6 blocks tall trunk, leaves on top)
+                        let tree_height = 5 + ((tree_noise * 100.0) as i32 % 2);
+
+                        // Place trunk
+                        for trunk_y in 0..tree_height {
+                            let y = surface_height as usize + trunk_y as usize;
+                            if y < CHUNK_HEIGHT {
+                                blocks[x][y][z] = BlockType::Log;
+                            }
+                        }
+
+                        // Place leaves in a 5x5x4 blob around the top of the trunk
+                        let leaf_start_y = surface_height + tree_height - 2;
+                        for leaf_y in 0..4 {
+                            for leaf_x in -2..=2 {
+                                for leaf_z in -2..=2 {
+                                    let block_x = x as i32 + leaf_x;
+                                    let block_z = z as i32 + leaf_z;
+                                    let block_y = leaf_start_y + leaf_y;
+
+                                    // Check bounds
+                                    if block_x >= 0 && block_x < CHUNK_WIDTH as i32 &&
+                                       block_z >= 0 && block_z < CHUNK_WIDTH as i32 &&
+                                       block_y >= 0 && block_y < CHUNK_HEIGHT as i32 {
+
+                                        // Skip center trunk blocks
+                                        if leaf_x == 0 && leaf_z == 0 && leaf_y < 2 {
+                                            continue;
+                                        }
+
+                                        // Create spherical-ish leaf shape
+                                        let dist = (leaf_x * leaf_x + leaf_z * leaf_z +
+                                                   (leaf_y - 2) * (leaf_y - 2)) as f32;
+                                        if dist < 8.0 {
+                                            let current = blocks[block_x as usize][block_y as usize][block_z as usize];
+                                            if current == BlockType::Air {
+                                                blocks[block_x as usize][block_y as usize][block_z as usize] = BlockType::Leaves;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -376,8 +449,14 @@ impl Chunk {
                     ];
 
                     for (offset, face_id) in faces {
-                        // Only create face if neighbor is air (face is visible)
-                        if self.get_block(x + offset[0], y + offset[1], z + offset[2]) != BlockType::Air {
+                        let neighbor = self.get_block(x + offset[0], y + offset[1], z + offset[2]);
+
+                        // Render face if neighbor is air, or if current block is leaves and neighbor is not leaves
+                        // This makes leaves see-through to other blocks but not to each other
+                        let should_render = neighbor == BlockType::Air ||
+                                          (block == BlockType::Leaves && neighbor != BlockType::Leaves);
+
+                        if !should_render {
                             continue;
                         }
 
@@ -580,13 +659,16 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // Load all block textures
+        // Load all block textures - ORDER MATTERS! Must match get_texture_indices()
         let texture_paths = [
-            "assets/textures/grass_top.png",
-            "assets/textures/grass_bottom.png",
-            "assets/textures/grass_side.png",
-            "assets/textures/dirt.png",
-            "assets/textures/stone.png",
+            "assets/textures/grass_top.png",        // Index 0
+            "assets/textures/grass_bottom.png",     // Index 1
+            "assets/textures/grass_side.png",       // Index 2
+            "assets/textures/dirt.png",             // Index 3
+            "assets/textures/stone.png",            // Index 4
+            "assets/textures/log_top-bottom.png",   // Index 5
+            "assets/textures/log_side.png",         // Index 6
+            "assets/textures/leaves.png",           // Index 7
         ];
 
         let textures: Vec<_> = texture_paths.iter()
@@ -619,7 +701,7 @@ impl State {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
-                    count: Some(std::num::NonZeroU32::new(5).unwrap()),
+                    count: Some(std::num::NonZeroU32::new(8).unwrap()),
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
@@ -710,7 +792,7 @@ impl State {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),  // Enable alpha blending for transparency
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
