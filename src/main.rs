@@ -296,7 +296,7 @@ impl State {
             cache: None,
         });
 
-        // Generate world with loading screen
+        // Generate world with loading screen - NON-BLOCKING
         println!("Generating world...");
         let (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices) = {
             // Create loading screen
@@ -314,42 +314,59 @@ impl State {
                 let _ = done_tx.send(result);
             });
 
+            // Keep window responsive during generation
+            let start_time = std::time::Instant::now();
+            let mut last_update = start_time;
+            let mut num_indices = 6; // Start with just background
+
             // Render loading screen with progress updates
             loop {
-                // Check for progress updates (non-blocking)
-                if let Ok((current, total)) = progress_rx.try_recv() {
+                // Update progress from background thread
+                while let Ok((current, total)) = progress_rx.try_recv() {
                     let progress = current as f32 / total as f32;
-                    loading_screen.update_progress(&queue, progress);
+                    num_indices = loading_screen.update_progress(&queue, progress, current);
                 }
 
-                // Render the loading screen
-                match surface.get_current_texture() {
-                    Ok(output) => {
-                        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                        loading_screen.render(&view, &device, &queue);
-                        output.present();
-                    }
-                    Err(wgpu::SurfaceError::Lost) => {
-                        surface.configure(&device, &config);
-                    }
-                    Err(e) => {
-                        eprintln!("Surface error during loading: {:?}", e);
+                // Limit render rate to 60fps to reduce CPU usage
+                let now = std::time::Instant::now();
+                if now.duration_since(last_update).as_millis() >= 16 {
+                    last_update = now;
+
+                    // Render the loading screen
+                    match surface.get_current_texture() {
+                        Ok(output) => {
+                            let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                            loading_screen.render(&view, &device, &queue, num_indices);
+                            output.present();
+                        }
+                        Err(wgpu::SurfaceError::Lost) => {
+                            surface.configure(&device, &config);
+                        }
+                        Err(wgpu::SurfaceError::Timeout) => {
+                            // Just skip this frame
+                        }
+                        Err(e) => {
+                            eprintln!("Surface error during loading: {:?}", e);
+                        }
                     }
                 }
 
-                // Check if generation is complete (non-blocking)
+                // Check if generation is complete
                 if let Ok(result) = done_rx.try_recv() {
                     // Render final loading screen at 100%
-                    loading_screen.update_progress(&queue, 1.0);
+                    num_indices = loading_screen.update_progress(&queue, 1.0, 256);
                     if let Ok(output) = surface.get_current_texture() {
                         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                        loading_screen.render(&view, &device, &queue);
+                        loading_screen.render(&view, &device, &queue, num_indices);
                         output.present();
                     }
+                    // Small delay so user can see 100%
+                    std::thread::sleep(std::time::Duration::from_millis(200));
                     break result;
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(16)); // ~60fps
+                // Small sleep to prevent busy-waiting
+                std::thread::sleep(std::time::Duration::from_millis(1));
             }
         };
 
