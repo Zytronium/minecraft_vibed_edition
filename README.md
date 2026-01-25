@@ -5,7 +5,9 @@ Minecraft, as many have before, but in Rust, and using 99% AI. The textures
 are drawn by me and some of the debugging is done by me, as well as all the
 AI prompts to implement features and most bug fixes, but everything else is 
 vibe coded. The AI mostly used for this project is Claude. The game is being
-tested on a Fedora Linux 43 laptop with an Intel GPU and 16 GB of ram. 
+tested on a Fedora Linux 43 laptop with an Intel GPU and 16 GB of RAM. In
+production, as of the end of day 1, the game runs at full FPS (not measured, but
+it visually looks high FPS) while using only around 74 MB of RAM.
 
 ## Progress Reports:
 
