@@ -1,0 +1,8 @@
+CLAUDE AI INSTRUCTIONS AND RESTRICTIONS
+
+Ensure all code is well documented. Do not remove comments unless the
+functionality of the code has changed or the comment is irrelevant now
+(i.e. "// add this line" should be removed)
+
+Keep things well organized by using multiple files when best practice recommends
+to do so.
