@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use noise::{NoiseFn, Perlin};
+use rand::Rng;
 use crate::block::{BlockType, BlockRegistry};
 use crate::vertex::{Vertex, get_face_vertices};
 
@@ -193,6 +194,7 @@ impl Chunk {
         let grass_block = registry.block_type("minecraft:grass");
         let dirt_block = registry.block_type("minecraft:dirt");
         let stone_block = registry.block_type("minecraft:stone");
+        let bedrock_block = registry.block_type("minecraft:bedrock");
 
         // Initialize multiple Perlin noise generators with different seeds for variety
         let terrain_perlin = Perlin::new(42);      // Primary terrain shape
@@ -265,9 +267,16 @@ impl Chunk {
 
                 // === FILL COLUMN WITH BLOCKS ===
                 for y in 0..CHUNK_HEIGHT {
-                    blocks[x][y][z] = if y < 3 {
-                        // Bedrock layer at the very bottom (Y 0-2)
-                        stone_block
+                    blocks[x][y][z] = if y < 2 {
+                        // Bedrock layer at the very bottom (Y 0-1)
+                        bedrock_block
+                    } else if y == 2 {
+                        // Random bedrock/stone layer at Y=2
+                        if rand::random::<bool>() {
+                            bedrock_block
+                        } else {
+                            stone_block
+                        }
                     } else if y < surface_height as usize {
                         let depth = surface_height as usize - y;
 
