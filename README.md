@@ -71,7 +71,36 @@ one AI prompt to fix.
 ---
 
 ### Day 2
-As of the writing of this, day 2 has just begun. I have not continued
+Day 2 had much less noticeable progress than day 2, but I actually made so much
+progress that I used up all my free Claude credits for the day on 5 or 6 different
+Claude accounts. Most of it was troubleshooting. I did not have as much luck one
+day 2 with getting things right first or second try as I did on day 1.
+
+On day 2, I implemented a main menu and a loading screen. This makes the game 
+launch almost instantly rather than waiting to render anything until the world
+has loaded. It also lets you pick a world size from 5 presets, though the last
+2 presets are too large and crash the game. 
+
+![Main Menu](readme_assets/main_menu.png)  
+![Loading Screen](readme_assets/loading.png)
+
+I've also noticed that world generation is several orders of magnitude faster 
+in a release executable compared to development. I knew it would be faster, but 
+had no idea that a roughly 5-minute task in development would take more like 
+15 seconds in production.
+
+I also added trees to world generation.  
+![trees](readme_assets/trees.png)  
+
+Here's a demo video for the progress so far:  
+[![Video demo](readme_assets/yx33lQ9U_thumbnail.png)](https://stellicast.com/watch/yx33lQ9U)
+
+
+
+---
+
+### Day 3
+As of the writing of this, day 3 has just begun. I have not continued
 development yet. Currently, the only method of movement is basically 
 spectator mode. I want to add creative mode as an option. I also want to add
 a pause menu and fix camera movement.
