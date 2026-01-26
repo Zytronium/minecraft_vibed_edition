@@ -1,6 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use noise::{NoiseFn, Perlin};
-use crate::block::BlockType;
+use crate::block::{BlockType, BlockRegistry};
 use crate::vertex::{Vertex, get_face_vertices};
 
 // Chunk dimensions - standard Minecraft sizes
@@ -17,6 +18,7 @@ pub struct Chunk {
 /// World containing all chunks with cross-chunk block access
 pub struct World {
     chunks: HashMap<(i32, i32), Chunk>,
+    registry: Arc<BlockRegistry>,
 }
 
 /// Smooth interpolation function (smoothstep) for blending values
@@ -27,16 +29,17 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 }
 
 impl World {
-    fn new() -> Self {
+    fn new(registry: Arc<BlockRegistry>) -> Self {
         Self {
             chunks: HashMap::new(),
+            registry,
         }
     }
 
     /// Get block at world coordinates, works across chunk boundaries
     pub fn get_block(&self, x: i32, y: i32, z: i32) -> BlockType {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
-            return BlockType::Air;
+            return BlockType::air();
         }
 
         // Convert world coordinates to chunk coordinates
@@ -48,7 +51,7 @@ impl World {
         if let Some(chunk) = self.chunks.get(&(chunk_x, chunk_z)) {
             chunk.blocks[local_x as usize][y as usize][local_z as usize]
         } else {
-            BlockType::Air
+            BlockType::air()
         }
     }
 
@@ -71,13 +74,17 @@ impl World {
     /// Generate entire world with terrain and trees
     /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
     /// progress_callback is called with (current_chunk, total_chunks) for progress updates
-    pub fn generate<F>(world_size_chunks: i32, mut progress_callback: F) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
+    pub fn generate<F>(
+        world_size_chunks: i32,
+        registry: Arc<BlockRegistry>,
+        mut progress_callback: F
+    ) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
     where
         F: FnMut(usize, usize),
     {
         let total_chunks = (world_size_chunks * world_size_chunks) as usize;
 
-        let mut world = World::new();
+        let mut world = World::new(Arc::clone(&registry));
         let tree_perlin = Perlin::new(5555);
 
         let mut current_chunk = 0;
@@ -85,13 +92,19 @@ impl World {
         // First pass: Generate all chunks
         for chunk_x in 0..world_size_chunks {
             for chunk_z in 0..world_size_chunks {
-                let chunk = Chunk::new(chunk_x, chunk_z);
+                let chunk = Chunk::new(chunk_x, chunk_z, &registry);
                 world.chunks.insert((chunk_x, chunk_z), chunk);
 
                 current_chunk += 1;
                 progress_callback(current_chunk, total_chunks);
             }
         }
+
+        // Block types we'll use (with minecraft: prefix)
+        let grass_block = registry.block_type("minecraft:grass");
+        let log_block = registry.block_type("minecraft:log");
+        let leaves_block = registry.block_type("minecraft:leaves");
+        let air_block = BlockType::air();
 
         // Second pass: Generate trees (can now span chunk boundaries)
         for chunk_x in 0..world_size_chunks {
@@ -107,14 +120,14 @@ impl World {
                         // Find surface height
                         let mut surface_y = 0;
                         for y in (0..CHUNK_HEIGHT).rev() {
-                            if world.get_block(world_x, y as i32, world_z) != BlockType::Air {
+                            if world.get_block(world_x, y as i32, world_z) != air_block {
                                 surface_y = y as i32;
                                 break;
                             }
                         }
 
                         let surface_block = world.get_block(world_x, surface_y, world_z);
-                        if surface_block == BlockType::Grass && surface_y > 50 && surface_y < 100 {
+                        if surface_block == grass_block && surface_y > 50 && surface_y < 100 {
                             let tree_noise = tree_perlin.get([world_x as f64 / 4.0, world_z as f64 / 4.0]);
 
                             // Determine tree density based on biome
@@ -136,7 +149,7 @@ impl World {
 
                             if tree_noise > tree_density {
                                 let tree_height = 5 + ((tree_noise * 100.0) as i32 % 2);
-                                generate_tree(&mut world, world_x, surface_y + 1, world_z, tree_height);
+                                generate_tree(&mut world, world_x, surface_y + 1, world_z, tree_height, log_block, leaves_block);
                             }
                         }
                     }
@@ -172,8 +185,14 @@ impl World {
 
 impl Chunk {
     /// Generate a new chunk with procedural terrain at the given chunk coordinates
-    fn new(chunk_x: i32, chunk_z: i32) -> Self {
-        let mut blocks = [[[BlockType::Air; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH];
+    fn new(chunk_x: i32, chunk_z: i32, registry: &BlockRegistry) -> Self {
+        let mut blocks = [[[BlockType::air(); CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH];
+
+        // Get block types we'll use
+        let air_block = BlockType::air();
+        let grass_block = registry.block_type("minecraft:grass");
+        let dirt_block = registry.block_type("minecraft:dirt");
+        let stone_block = registry.block_type("minecraft:stone");
 
         // Initialize multiple Perlin noise generators with different seeds for variety
         let terrain_perlin = Perlin::new(42);      // Primary terrain shape
@@ -248,7 +267,7 @@ impl Chunk {
                 for y in 0..CHUNK_HEIGHT {
                     blocks[x][y][z] = if y < 3 {
                         // Bedrock layer at the very bottom (Y 0-2)
-                        BlockType::Stone
+                        stone_block
                     } else if y < surface_height as usize {
                         let depth = surface_height as usize - y;
 
@@ -288,19 +307,19 @@ impl Chunk {
                         };
 
                         if is_cave || surface_cave {
-                            BlockType::Air
+                            air_block
                         } else {
                             // === SURFACE LAYER COMPOSITION ===
                             if depth == 1 {
-                                BlockType::Grass  // Top layer is grass
+                                grass_block  // Top layer is grass
                             } else if depth <= 5 {
-                                BlockType::Dirt   // Next 2-5 layers are dirt
+                                dirt_block   // Next 2-5 layers are dirt
                             } else {
-                                BlockType::Stone  // Everything deeper is stone
+                                stone_block  // Everything deeper is stone
                             }
                         }
                     } else {
-                        BlockType::Air  // Above surface - air
+                        air_block  // Above surface - air
                     };
                 }
             }
@@ -315,16 +334,14 @@ impl Chunk {
 
     /// Generate mesh geometry for this chunk with cross-chunk neighbor checking
     /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
-    ///
-    /// CRITICAL FIX: This function properly handles transparency by:
-    /// 1. Separating opaque and transparent geometry into different buffers
-    /// 2. Ensuring opaque blocks render their faces when behind transparent blocks
-    /// 3. Allowing transparent blocks to see through to different block types
     fn generate_mesh(&self, world: &World) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>) {
         let mut opaque_vertices = Vec::new();
         let mut opaque_indices = Vec::new();
         let mut transparent_vertices = Vec::new();
         let mut transparent_indices = Vec::new();
+
+        let air_block = BlockType::air();
+        let registry = &world.registry;
 
         // Iterate through every block in the chunk
         for x in 0..CHUNK_WIDTH as i32 {
@@ -335,13 +352,13 @@ impl Chunk {
                     let block = world.get_block(world_x, y, world_z);
 
                     // Skip air blocks - nothing to render
-                    if block == BlockType::Air {
+                    if block == air_block {
                         continue;
                     }
 
                     // World position of this block
                     let pos = [world_x as f32, y as f32, world_z as f32];
-                    let is_transparent = block.is_transparent();
+                    let is_transparent = registry.is_transparent(block.id);
 
                     // Check all 6 faces of the block
                     // Format: (offset to check, face_id)
@@ -361,19 +378,13 @@ impl Chunk {
                             world_z + offset[2]
                         );
 
-                        // CRITICAL FIX FOR TRANSPARENCY BUG:
                         // Render face if ANY of these conditions are true:
                         // 1. Neighbor is air (always render against air)
                         // 2. Current block is transparent AND neighbor is different type
-                        //    (makes transparent blocks see through to different blocks)
                         // 3. Current block is opaque AND neighbor is transparent but not air
-                        //    (makes opaque blocks visible behind transparent blocks like leaves)
-                        //
-                        // This third condition is what was missing and causing solid blocks
-                        // to disappear behind leaves!
-                        let should_render = neighbor == BlockType::Air ||
+                        let should_render = neighbor == air_block ||
                             (is_transparent && neighbor != block) ||
-                            (!is_transparent && neighbor.is_transparent() && neighbor != BlockType::Air);
+                            (!is_transparent && registry.is_transparent(neighbor.id) && neighbor != air_block);
 
                         if !should_render {
                             continue;
@@ -388,7 +399,7 @@ impl Chunk {
 
                         // Generate the 4 vertices for this face
                         let base_index = vertices.len() as u32;
-                        let texture_index = block.get_texture_indices(face_id);
+                        let texture_index = registry.get_texture_indices(block.id, face_id);
                         let face_verts = get_face_vertices(pos, face_id, texture_index);
                         vertices.extend_from_slice(&face_verts);
 
@@ -409,12 +420,22 @@ impl Chunk {
 
 /// Generate tree at world position using world for cross-chunk placement
 /// This allows trees to span chunk boundaries properly
-fn generate_tree(world: &mut World, world_x: i32, surface_y: i32, world_z: i32, tree_height: i32) {
+fn generate_tree(
+    world: &mut World,
+    world_x: i32,
+    surface_y: i32,
+    world_z: i32,
+    tree_height: i32,
+    log_block: BlockType,
+    leaves_block: BlockType
+) {
+    let air_block = BlockType::air();
+
     // Place trunk vertically
     for trunk_y in 0..tree_height {
         let y = surface_y + trunk_y;
         if y < CHUNK_HEIGHT as i32 {
-            world.set_block(world_x, y, world_z, BlockType::Log);
+            world.set_block(world_x, y, world_z, log_block);
         }
     }
 
@@ -437,8 +458,8 @@ fn generate_tree(world: &mut World, world_x: i32, surface_y: i32, world_z: i32, 
                     let dist = (leaf_x * leaf_x + leaf_z * leaf_z + (leaf_y - 2) * (leaf_y - 2)) as f32;
                     if dist < 8.0 {
                         let current = world.get_block(block_x, block_y, block_z);
-                        if current == BlockType::Air {
-                            world.set_block(block_x, block_y, block_z, BlockType::Leaves);
+                        if current == air_block {
+                            world.set_block(block_x, block_y, block_z, leaves_block);
                         }
                     }
                 }

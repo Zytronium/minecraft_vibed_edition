@@ -4,6 +4,7 @@ mod vertex;
 mod world;
 mod loading;
 mod menu;
+mod models;
 
 use winit::{
     event::*,
@@ -31,6 +32,12 @@ const STONE: &[u8] = include_bytes!("../assets/textures/stone.png");
 const LOG_TOP_BOTTOM: &[u8] = include_bytes!("../assets/textures/log_top-bottom.png");
 const LOG_SIDE: &[u8] = include_bytes!("../assets/textures/log_side.png");
 const LEAVES: &[u8] = include_bytes!("../assets/textures/leaves.png");
+const NOT_FOUND: &[u8] = include_bytes!("../assets/textures/not_found.png");
+
+// Embed JSON data files at compile time
+const BLOCKS_JSON: &str = include_str!("blocks.json");
+const ITEMS_JSON: &str = include_str!("items.json");
+const CRAFTING_JSON: &str = include_str!("crafting.json");
 
 /// Main rendering state - holds all GPU resources and game state
 struct State {
@@ -55,13 +62,37 @@ struct State {
     mouse_pressed: bool,
     last_mouse_pos: Option<(f64, f64)>,
     window: Arc<Window>,
+    block_registry: Arc<block::BlockRegistry>,
+    texture_map: std::collections::HashMap<String, u32>,
 }
 
 impl State {
     async fn new(window: Arc<Window>, world_size: WorldSize, instance: wgpu::Instance, surface: wgpu::Surface<'static>) -> Self {
         let size = window.inner_size();
 
-        // Reuse existing instance and surface from menu
+        // Load game data from embedded JSON
+        let blocks_data: models::BlocksData = serde_json::from_str(BLOCKS_JSON)
+            .expect("Failed to parse blocks.json");
+        let items_data: models::ItemsData = serde_json::from_str(ITEMS_JSON)
+            .expect("Failed to parse items.json");
+        let recipes_data: models::RecipesData = serde_json::from_str(CRAFTING_JSON)
+            .expect("Failed to parse crafting.json");
+
+        println!("Loaded {} blocks, {} items, {} recipes",
+                 blocks_data.blocks.len(),
+                 items_data.items.len(),
+                 recipes_data.recipes.len());
+
+        // Build texture map from blocks
+        let texture_map = build_texture_map(&blocks_data.blocks);
+        println!("Found {} unique textures", texture_map.len());
+
+        // Initialize block registry
+        let mut block_registry = block::BlockRegistry::new();
+        block_registry.load_blocks(blocks_data.blocks);
+        block_registry.build_texture_indices(&texture_map);
+        let block_registry = Arc::new(block_registry);
+
         // Request GPU adapter
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
@@ -100,22 +131,8 @@ impl State {
         };
         surface.configure(&device, &config);
 
-        // Load all block textures from embedded bytes - ORDER MATTERS! Must match BlockType::get_texture_indices()
-        let texture_data = [
-            (GRASS_TOP, "grass_top"),
-            (GRASS_BOTTOM, "grass_bottom"),
-            (GRASS_SIDE, "grass_side"),
-            (DIRT, "dirt"),
-            (STONE, "stone"),
-            (LOG_TOP_BOTTOM, "log_top_bottom"),
-            (LOG_SIDE, "log_side"),
-            (LEAVES, "leaves"),
-        ];
-
-        let textures: Vec<_> = texture_data.iter()
-            .map(|(bytes, label)| load_texture_from_bytes(&device, &queue, bytes, label))
-            .collect();
-
+        // Load textures dynamically based on texture_map
+        let textures = load_textures_from_map(&device, &queue, &texture_map);
         let texture_views: Vec<_> = textures.iter()
             .map(|t| t.create_view(&wgpu::TextureViewDescriptor::default()))
             .collect();
@@ -131,7 +148,8 @@ impl State {
             ..Default::default()
         });
 
-        // Create bind group layout for textures
+        // Create bind group layout for textures - dynamic array size
+        let texture_count = texture_map.len().max(1) as u32;
         let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
@@ -142,7 +160,7 @@ impl State {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                     },
-                    count: Some(std::num::NonZeroU32::new(8).unwrap()),
+                    count: Some(std::num::NonZeroU32::new(texture_count).unwrap()),
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
@@ -249,7 +267,7 @@ impl State {
             },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
-                depth_write_enabled: true,  // Write depth for opaque
+                depth_write_enabled: true,
                 depth_compare: wgpu::CompareFunction::Less,
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
@@ -274,7 +292,7 @@ impl State {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: config.format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),  // Alpha blending for transparency
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: Default::default(),
@@ -311,10 +329,11 @@ impl State {
             let (done_tx, done_rx) = mpsc::channel();
 
             let world_size_chunks = world_size.get_chunks();
+            let registry_clone = Arc::clone(&block_registry);
 
             // Spawn world generation in a separate thread
             std::thread::spawn(move || {
-                let result = World::generate(world_size_chunks, move |current, total| {
+                let result = World::generate(world_size_chunks, registry_clone, move |current, total| {
                     let _ = progress_tx.send((current, total));
                 });
                 let _ = done_tx.send(result);
@@ -428,6 +447,8 @@ impl State {
             mouse_pressed: false,
             last_mouse_pos: None,
             window,
+            block_registry,
+            texture_map,
         }
     }
 
@@ -617,6 +638,81 @@ impl State {
 
         Ok(())
     }
+}
+
+/// Build texture map from block definitions
+fn build_texture_map(blocks: &[models::Block]) -> std::collections::HashMap<String, u32> {
+    let mut texture_map = std::collections::HashMap::new();
+    let mut next_index = 0u32;
+
+    for block in blocks {
+        // Collect all unique texture names from this block
+        let textures = &block.textures;
+
+        if let Some(ref all) = textures.all {
+            texture_map.entry(all.clone()).or_insert_with(|| {
+                let idx = next_index;
+                next_index += 1;
+                idx
+            });
+        }
+
+        for texture_name in [
+            &textures.top,
+            &textures.bottom,
+            &textures.north,
+            &textures.south,
+            &textures.east,
+            &textures.west,
+        ].iter().filter_map(|t| t.as_ref()) {
+            texture_map.entry(texture_name.clone()).or_insert_with(|| {
+                let idx = next_index;
+                next_index += 1;
+                idx
+            });
+        }
+    }
+
+    texture_map
+}
+
+/// Load textures dynamically based on texture_map
+fn load_textures_from_map(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture_map: &std::collections::HashMap<String, u32>,
+) -> Vec<wgpu::Texture> {
+    // Map of embedded texture names to their bytes
+    let embedded_textures: std::collections::HashMap<&str, &[u8]> = [
+        ("grass_top", GRASS_TOP),
+        ("grass_bottom", GRASS_BOTTOM),
+        ("grass_side", GRASS_SIDE),
+        ("dirt", DIRT),
+        ("stone", STONE),
+        ("log_top-bottom", LOG_TOP_BOTTOM),
+        ("log_side", LOG_SIDE),
+        ("leaves", LEAVES),
+    ].iter().cloned().collect();
+
+    // Build a reverse map: index -> texture_name (Option<&str> is Clone because &str is Copy)
+    let mut index_to_name: Vec<Option<&str>> = vec![None; texture_map.len()];
+    for (texture_name, &index) in texture_map {
+        index_to_name[index as usize] = Some(texture_name.as_str());
+    }
+
+    // Load each texture in index order
+    index_to_name.into_iter()
+        .map(|name_opt| {
+            let texture_name = name_opt.expect("Missing texture for index");
+            if let Some(bytes) = embedded_textures.get(texture_name) {
+                load_texture_from_bytes(device, queue, bytes, texture_name)
+        } else {
+                eprintln!("Warning: Texture '{}' not found in embedded assets, using not_found.png", texture_name);
+                // Use not_found.png as fallback for missing textures
+                load_texture_from_bytes(device, queue, NOT_FOUND, "not_found")
+        }
+        })
+        .collect()
 }
 
 /// Load a texture from embedded bytes and upload to GPU
