@@ -674,6 +674,7 @@ struct MenuContext {
     device: wgpu::Device,
     queue: wgpu::Queue,
     window: Arc<Window>,
+    surface_format: wgpu::TextureFormat,  // Store the format to avoid re-querying
 }
 
 struct App {
@@ -682,6 +683,7 @@ struct App {
     menu_ctx: Option<MenuContext>,
     game_state: GameState,
     last_render_time: std::time::Instant,
+    last_mouse_pos: Option<(f64, f64)>,
 }
 
 impl ApplicationHandler for App {
@@ -735,12 +737,12 @@ impl ApplicationHandler for App {
             surface.configure(&device, &config);
 
             let mut menu = MainMenu::new(&device, &queue, surface_format, size.width, size.height);
-            let num_indices = menu.update_geometry(&queue);
+            let bg_indices = menu.update_geometry(&queue);
 
             // Render initial menu
             if let Ok(output) = surface.get_current_texture() {
                 let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                menu.render(&view, &device, &queue, num_indices);
+                menu.render(&view, &device, &queue, bg_indices);
                 output.present();
             }
 
@@ -751,6 +753,7 @@ impl ApplicationHandler for App {
                 device,
                 queue,
                 window,
+                surface_format,  // Store format for later use
             });
         }
     }
@@ -760,13 +763,70 @@ impl ApplicationHandler for App {
             GameState::Menu => {
                 match event {
                     WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::Resized(physical_size) => {
+                        // Handle menu window resize
+                        if let (Some(menu), Some(ctx)) = (&mut self.menu, &mut self.menu_ctx) {
+                            menu.resize(&ctx.queue, physical_size.width, physical_size.height);
+
+                            // Reconfigure surface using stored format
+                            let config = wgpu::SurfaceConfiguration {
+                                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                format: ctx.surface_format,
+                                width: physical_size.width,
+                                height: physical_size.height,
+                                present_mode: wgpu::PresentMode::Fifo,
+                                alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                                view_formats: vec![],
+                                desired_maximum_frame_latency: 2,
+                            };
+                            ctx.surface.configure(&ctx.device, &config);
+
+                            ctx.window.request_redraw();
+                        }
+                    }
                     WindowEvent::RedrawRequested => {
                         if let (Some(menu), Some(ctx)) = (&mut self.menu, &self.menu_ctx) {
-                            let num_indices = menu.update_geometry(&ctx.queue);
+                            let bg_indices = menu.update_geometry(&ctx.queue);
                             if let Ok(output) = ctx.surface.get_current_texture() {
                                 let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-                                menu.render(&view, &ctx.device, &ctx.queue, num_indices);
+                                menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
                                 output.present();
+                            }
+                        }
+                    }
+                    WindowEvent::CursorMoved { position, .. } => {
+                        self.last_mouse_pos = Some((position.x, position.y));
+                        if let Some(menu) = &mut self.menu {
+                            if menu.check_hover(position.x, position.y) {
+                                if let Some(ctx) = &self.menu_ctx {
+                                    ctx.window.request_redraw();
+                                }
+                            }
+                        }
+                    }
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    } => {
+                        if let Some(menu) = &mut self.menu {
+                            // Use the last known mouse position for click handling
+                            if let Some((x, y)) = self.last_mouse_pos {
+                                if menu.handle_click(x, y) {
+                                    println!("Starting world generation: {:?} chunks", menu.get_selected_size().get_chunks());
+
+                                    if let Some(ctx) = self.menu_ctx.take() {
+                                        let selected_size = menu.get_selected_size();
+                                        self.state = Some(pollster::block_on(State::new(
+                                            ctx.window,
+                                            selected_size,
+                                            ctx.instance,
+                                            ctx.surface
+                                        )));
+                                        self.menu = None;
+                                        self.game_state = GameState::Playing;
+                                    }
+                                }
                             }
                         }
                     }
@@ -801,8 +861,6 @@ impl ApplicationHandler for App {
                                     println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
 
                                     if let Some(ctx) = self.menu_ctx.take() {
-                                        // Reuse instance and surface from menu
-                                        // Create new device with texture array features needed for the game
                                         self.state = Some(pollster::block_on(State::new(
                                             ctx.window,
                                             selected_size,
@@ -880,6 +938,7 @@ fn main() {
         menu_ctx: None,
         game_state: GameState::Menu,
         last_render_time: std::time::Instant::now(),
+        last_mouse_pos: None,
     };
 
     event_loop.run_app(&mut app).unwrap();

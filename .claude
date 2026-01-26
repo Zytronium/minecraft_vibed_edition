@@ -11,3 +11,6 @@ Embed all game assets into the compiled program so nohting relies on an external
 path. This allows the compiled program to run in any file location on any
 compatible Linux computer because the required game assets are embedded in the
 executable program.
+
+When editing multiple files, ensure you create an artifact for each one you edit.
+Don't just use one single artifact.

@@ -5,13 +5,18 @@ use glyphon::{
 
 const FONT: &[u8] = include_bytes!("../assets/fonts/font.ttf");
 const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
+const BUTTON_TEXTURE: &[u8] = include_bytes!("../assets/textures/ui/button2.png");
 
 pub struct MainMenu {
     pipeline: wgpu::RenderPipeline,
     dirt_bind_group: wgpu::BindGroup,
+    button_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     selected_option: usize,
+    hovered_option: Option<usize>,
+    window_width: u32,
+    window_height: u32,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -87,10 +92,21 @@ impl MenuVertex {
     }
 }
 
+/// Button bounds in screen coordinates
+struct ButtonBounds {
+    left: f32,
+    right: f32,
+    top: f32,
+    bottom: f32,
+}
+
 impl MainMenu {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
         let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "menu_dirt");
         let dirt_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let button_texture = load_texture_from_bytes(device, queue, BUTTON_TEXTURE, "menu_button");
+        let button_view = button_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -137,6 +153,21 @@ impl MainMenu {
                 },
             ],
             label: Some("menu_dirt_bind_group"),
+        });
+
+        let button_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&button_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
+            ],
+            label: Some("menu_button_bind_group"),
         });
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -205,14 +236,11 @@ impl MainMenu {
         let swash_cache = SwashCache::new();
         let cache = glyphon::Cache::new(device);
         let mut viewport = Viewport::new(device, &cache);
-        // CRITICAL FIX: Update viewport with actual window dimensions
         viewport.update(queue, glyphon::Resolution { width, height });
 
         let mut atlas = TextAtlas::new(device, queue, &cache, format);
         let text_renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
 
-        // Use the loaded font by specifying Family::Name with the font family name
-        // Most fonts will work with their family name, but we can also use Family::SansSerif as fallback
         let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
 
         // Create text buffers
@@ -232,14 +260,14 @@ impl MainMenu {
 
         // Options
         let options = [
-            "Small (8x8 chunks)",
-            "Medium (16x16 chunks)",
-            "Large (32x32 chunks)",
-            "Enormous (64x64 chunks)",
-            "Overkill (1024x1024 chunks)",
+            "Small (8x8)",
+            "Medium (16x16)",
+            "Large (32x32)",
+            "Enormous (64x64)",
+            "Overkill (1024x1024)",
         ];
         for option in options {
-            let mut buffer = Buffer::new(&mut font_system, Metrics::new(35.0, 45.0));
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
             buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
             buffer.set_text(&mut font_system, option, font_attrs, Shaping::Advanced);
             buffers.push(buffer);
@@ -248,15 +276,19 @@ impl MainMenu {
         // Instructions
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(25.0, 35.0));
         buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Use arrow keys, then press ENTER", font_attrs, Shaping::Advanced);
+        buffer.set_text(&mut font_system, "Click to select, or use arrow keys and ENTER", font_attrs, Shaping::Advanced);
         buffers.push(buffer);
 
         Self {
             pipeline,
             dirt_bind_group,
+            button_bind_group,
             vertex_buffer,
             index_buffer,
             selected_option: 1,
+            hovered_option: None,
+            window_width: width,
+            window_height: height,
             font_system,
             swash_cache,
             atlas,
@@ -264,6 +296,54 @@ impl MainMenu {
             text_renderer,
             buffers,
         }
+    }
+
+    /// Get button bounds scaled to current window size
+    fn get_button_bounds(&self, option_index: usize) -> ButtonBounds {
+        // Scale positions based on window size
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        let base_y = 300.0 + option_index as f32 * 60.0;
+        ButtonBounds {
+            left: 380.0 * scale_x,
+            right: 900.0 * scale_x,
+            top: base_y * scale_y,
+            bottom: (base_y + 45.0) * scale_y,
+        }
+    }
+
+    /// Check if mouse position is over a button with proper coordinate handling
+    pub fn check_hover(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
+        let mx = mouse_x as f32;
+        let my = mouse_y as f32;
+
+        for i in 0..5 {
+            let bounds = self.get_button_bounds(i);
+            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
+                self.hovered_option = Some(i);
+                return true;
+            }
+        }
+
+        self.hovered_option = None;
+        false
+    }
+
+    /// Handle mouse click with proper coordinate handling
+    pub fn handle_click(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
+        let mx = mouse_x as f32;
+        let my = mouse_y as f32;
+
+        for i in 0..5 {
+            let bounds = self.get_button_bounds(i);
+            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
+                self.selected_option = i;
+                return true;
+            }
+        }
+
+        false
     }
 
     pub fn move_selection_up(&mut self) {
@@ -282,21 +362,97 @@ impl MainMenu {
         WorldSize::from_index(self.selected_option)
     }
 
-    pub fn update_geometry(&self, queue: &wgpu::Queue) -> usize {
+    /// Update window dimensions on resize
+    pub fn resize(&mut self, queue: &wgpu::Queue, new_width: u32, new_height: u32) {
+        self.window_width = new_width;
+        self.window_height = new_height;
+        self.viewport.update(queue, glyphon::Resolution {
+            width: new_width,
+            height: new_height
+        });
+
+        // Update text buffer sizes
+        for buffer in &mut self.buffers {
+            buffer.set_size(&mut self.font_system, Some(new_width as f32), Some(new_height as f32));
+        }
+    }
+
+    /// Generate background geometry - returns number of indices
+    pub fn update_geometry(&mut self, queue: &wgpu::Queue) -> usize {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // Background (tiled dirt texture)
         let bg_verts = [
             MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
             MenuVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
             MenuVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
             MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
         ];
-        let indices = [0u32, 1, 2, 2, 3, 0];
+        vertices.extend_from_slice(&bg_verts);
+        indices.extend_from_slice(&[0u32, 1, 2, 2, 3, 0]);
 
-        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&bg_verts));
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
         queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
-        6
+        indices.len()
     }
 
-    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, _num_indices: usize) {
+    /// Update button geometry - returns (start_index, num_indices) for buttons
+    pub fn update_button_geometry(&mut self, queue: &wgpu::Queue) -> (usize, usize) {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // Convert screen coordinates to normalized device coordinates (-1 to 1)
+        let to_ndc_x = |x: f32| (x / self.window_width as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| -((y / self.window_height as f32) * 2.0 - 1.0);
+
+        // Draw button backgrounds using button texture
+        for i in 0..5 {
+            let bounds = self.get_button_bounds(i);
+
+            // Determine button color/tint based on state
+            let color = if Some(i) == self.hovered_option {
+                [1.2, 1.2, 1.2, 1.0] // Brighter when hovering
+            } else if i == self.selected_option {
+                [1.1, 1.1, 1.1, 1.0] // Slightly brighter when selected
+            } else {
+                [1.0, 1.0, 1.0, 1.0] // Normal
+            };
+
+            let left = to_ndc_x(bounds.left);
+            let right = to_ndc_x(bounds.right);
+            let top = to_ndc_y(bounds.top);
+            let bottom = to_ndc_y(bounds.bottom);
+
+            let base = vertices.len() as u32;
+            // Map entire button texture to each button
+            let button_verts = [
+                MenuVertex { position: [left, bottom], tex_coords: [0.0, 1.0], color },
+                MenuVertex { position: [right, bottom], tex_coords: [1.0, 1.0], color },
+                MenuVertex { position: [right, top], tex_coords: [1.0, 0.0], color },
+                MenuVertex { position: [left, top], tex_coords: [0.0, 0.0], color },
+            ];
+            vertices.extend_from_slice(&button_verts);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+
+        // Write to buffer at offset after background (6 indices for background quad)
+        let vertex_offset = 4 * std::mem::size_of::<MenuVertex>(); // 4 vertices for background
+        let index_offset = 6 * std::mem::size_of::<u32>(); // 6 indices for background
+
+        queue.write_buffer(&self.vertex_buffer, vertex_offset as u64, bytemuck::cast_slice(&vertices));
+
+        // Adjust indices to account for the 4 background vertices already in the buffer
+        let adjusted_indices: Vec<u32> = indices.iter().map(|&i| i + 4).collect();
+        queue.write_buffer(&self.index_buffer, index_offset as u64, bytemuck::cast_slice(&adjusted_indices));
+
+        (6, indices.len()) // Start at index 6, return number of button indices
+    }
+
+    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, bg_indices: usize) {
+        // Update button geometry
+        let (button_start, button_count) = self.update_button_geometry(queue);
+
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Menu Render Encoder"),
         });
@@ -320,47 +476,58 @@ impl MainMenu {
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+            // Draw background with dirt texture
             render_pass.set_bind_group(0, &self.dirt_bind_group, &[]);
-            render_pass.draw_indexed(0..6, 0, 0..1);
+            render_pass.draw_indexed(0..bg_indices as u32, 0, 0..1);
+
+            // Draw buttons with button texture
+            render_pass.set_bind_group(0, &self.button_bind_group, &[]);
+            render_pass.draw_indexed(button_start as u32..(button_start + button_count) as u32, 0, 0..1);
         }
+
+        // Scale text positions based on window size
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
 
         // Prepare text areas
         let mut text_areas = vec![
             TextArea {
                 buffer: &self.buffers[0],
-                left: 340.0,
-                top: 100.0,
+                left: 340.0 * scale_x,
+                top: 100.0 * scale_y,
                 scale: 1.0,
-                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
                 default_color: GlyphonColor::rgb(255, 255, 255),
                 custom_glyphs: &[],
             },
             TextArea {
                 buffer: &self.buffers[1],
-                left: 440.0,
-                top: 200.0,
+                left: 440.0 * scale_x,
+                top: 200.0 * scale_y,
                 scale: 1.0,
-                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
                 default_color: GlyphonColor::rgb(204, 204, 204),
                 custom_glyphs: &[],
             },
         ];
 
-        // Options
+        // Options - centered in buttons
         for i in 0..5 {
-            let y = 300.0 + i as f32 * 60.0;
-            let color = if i == self.selected_option {
-                GlyphonColor::rgb(255, 255, 0)
+            let y = (300.0 + i as f32 * 60.0) * scale_y + 8.0 * scale_y; // Offset for vertical centering
+            // Highlight if hovered or selected
+            let color = if Some(i) == self.hovered_option || i == self.selected_option {
+                GlyphonColor::rgb(255, 255, 0) // Yellow for hover or selected
             } else {
-                GlyphonColor::rgb(230, 230, 230)
+                GlyphonColor::rgb(230, 230, 230) // White for normal
             };
 
             text_areas.push(TextArea {
                 buffer: &self.buffers[2 + i],
-                left: 480.0,
+                left: 420.0 * scale_x,
                 top: y,
                 scale: 1.0,
-                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
                 default_color: color,
                 custom_glyphs: &[],
             });
@@ -369,10 +536,10 @@ impl MainMenu {
         // Instructions
         text_areas.push(TextArea {
             buffer: &self.buffers[7],
-            left: 380.0,
-            top: 650.0,
+            left: 320.0 * scale_x,
+            top: 650.0 * scale_y,
             scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+            bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
             default_color: GlyphonColor::rgb(153, 153, 153),
             custom_glyphs: &[],
         });
