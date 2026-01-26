@@ -1,0 +1,117 @@
+{
+  "recipes": [
+    {
+      "kind": "shaped",
+      "pattern": [
+        "###",
+        " | ",
+        " | "
+      ],
+      "key": {
+        "#": {
+          "tag": "planks"
+        },
+        "|": {
+          "itemId": "minecraft:stick"
+        }
+      },
+      "result": {
+        "itemId": "minecraft:wooden_pickaxe",
+        "count": 1
+      },
+      "station": "crafting_table",
+      "unlock": [
+        {
+          "has_item": "minecraft:planks"
+        }
+      ],
+      "tags": ["tools", "woodworking"]
+    },
+    {
+      "kind": "shaped",
+      "pattern": [
+        "###",
+        " | ",
+        " | "
+      ],
+      "key": {
+        "#": {
+          "itemId": "minecraft:cobblestone"
+        },
+        "|": {
+          "itemId": "minecraft:stick"
+        }
+      },
+      "result": {
+        "itemId": "minecraft:stone_pickaxe",
+        "count": 1
+      },
+      "station": "crafting_table",
+      "unlock": [
+        {
+          "has_item": "minecraft:cobblestone"
+        }
+      ],
+      "tags": ["tools", "stoneworking"]
+    },
+    {
+      "kind": "shapeless",
+      "ingredients": [
+        {
+          "itemId": "minecraft:log",
+          "count": 1
+        }
+      ],
+      "result": {
+        "itemId": "minecraft:planks",
+        "count": 4
+      },
+      "station": "none",
+      "unlock": [
+        {
+          "has_item": "minecraft:log"
+        }
+      ],
+      "tags": ["woodworking", "basic"]
+    },
+    {
+      "kind": "shapeless",
+      "ingredients": [
+        {
+          "itemId": "minecraft:planks",
+          "count": 2
+        }
+      ],
+      "result": {
+        "itemId": "minecraft:stick",
+        "count": 4
+      },
+      "station": "none",
+      "unlock": [
+        {
+          "has_item": "minecraft:planks"
+        }
+      ],
+      "tags": ["woodworking", "basic"]
+    },
+    {
+      "kind": "smelting",
+      "input": {
+        "itemId": "minecraft:cobblestone"
+      },
+      "result": {
+        "itemId": "minecraft:stone",
+        "count": 1
+      },
+      "experience": 0.1,
+      "cookTime": 200,
+      "station": "furnace",
+      "unlock": [
+        {
+          "has_item": "minecraft:cobblestone"
+        }
+      ],
+      "tags": ["smelting"]
+    }
+  ]
+}

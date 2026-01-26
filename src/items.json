@@ -1,0 +1,124 @@
+{
+  "items": [
+    {
+      "id": "minecraft:dirt",
+      "name": "Dirt",
+      "texture": "dirt",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:dirt"
+    },
+    {
+      "id": "minecraft:grass",
+      "name": "Grass Block",
+      "texture": "grass_side",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:grass"
+    },
+    {
+      "id": "minecraft:stone",
+      "name": "Stone",
+      "texture": "stone",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:stone"
+    },
+    {
+      "id": "minecraft:cobblestone",
+      "name": "Cobblestone",
+      "texture": "cobblestone",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:cobblestone"
+    },
+    {
+      "id": "minecraft:log",
+      "name": "Oak Log",
+      "texture": "log_side",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:log"
+    },
+    {
+      "id": "minecraft:leaves",
+      "name": "Oak Leaves",
+      "texture": "leaves",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:leaves"
+    },
+    {
+      "id": "minecraft:wooden_pickaxe",
+      "name": "Wooden Pickaxe",
+      "texture": "wooden_pickaxe",
+      "maxStackSize": 1,
+      "kind": "tool",
+      "toolType": "Pickaxe",
+      "tier": "Wood",
+      "damage": 2.0,
+      "durability": 59,
+      "attackSpeed": 1.2
+    },
+    {
+      "id": "minecraft:stone_pickaxe",
+      "name": "Stone Pickaxe",
+      "texture": "stone_pickaxe",
+      "maxStackSize": 1,
+      "kind": "tool",
+      "toolType": "Pickaxe",
+      "tier": "Stone",
+      "damage": 3.0,
+      "durability": 131,
+      "attackSpeed": 1.2
+    },
+    {
+      "id": "minecraft:iron_pickaxe",
+      "name": "Iron Pickaxe",
+      "texture": "iron_pickaxe",
+      "maxStackSize": 1,
+      "kind": "tool",
+      "toolType": "Pickaxe",
+      "tier": "Iron",
+      "damage": 4.0,
+      "durability": 250,
+      "attackSpeed": 1.2
+    },
+    {
+      "id": "minecraft:apple",
+      "name": "Apple",
+      "texture": "apple",
+      "maxStackSize": 64,
+      "kind": "food",
+      "hunger": 4,
+      "saturation": 2.4,
+      "health": 0
+    },
+    {
+      "id": "minecraft:cooked_porkchop",
+      "name": "Cooked Porkchop",
+      "texture": "cooked_porkchop",
+      "maxStackSize": 64,
+      "kind": "food",
+      "hunger": 8,
+      "saturation": 12.8,
+      "health": 0
+    },
+    {
+      "id": "minecraft:stick",
+      "name": "Stick",
+      "texture": "stick",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:stick"
+    },
+    {
+      "id": "minecraft:planks",
+      "name": "Oak Planks",
+      "texture": "planks",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:planks"
+    }
+  ]
+}

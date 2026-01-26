@@ -1,0 +1,179 @@
+{
+  "blocks": [
+    {
+      "id": "minecraft:grass",
+      "name": "Grass Block",
+      "hardness": 0.6,
+      "resistance": 0.6,
+      "fasterTool": "Shovel",
+      "drops": [
+        {
+          "itemId": "minecraft:dirt",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ],
+      "textures": {
+        "top": "grass_top",
+        "bottom": "grass_bottom",
+        "north": "grass_side",
+        "south": "grass_side",
+        "east": "grass_side",
+        "west": "grass_side"
+      },
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0
+    },
+    {
+      "id": "minecraft:dirt",
+      "name": "Dirt",
+      "hardness": 0.5,
+      "resistance": 0.5,
+      "fasterTool": "Shovel",
+      "drops": [
+        {
+          "itemId": "minecraft:dirt",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ],
+      "textures": {
+        "all": "dirt"
+      },
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0
+    },
+    {
+      "id": "minecraft:stone",
+      "name": "Stone",
+      "hardness": 1.5,
+      "resistance": 6.0,
+      "fasterTool": "Pickaxe",
+      "requiredTool": "Pickaxe",
+      "drops": [
+        {
+          "itemId": "minecraft:cobblestone",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ],
+      "textures": {
+        "all": "stone"
+      },
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0
+    },
+    {
+      "id": "minecraft:log",
+      "name": "Oak Log",
+      "hardness": 2.0,
+      "resistance": 2.0,
+      "fasterTool": "Axe",
+      "drops": [
+        {
+          "itemId": "minecraft:log",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ],
+      "textures": {
+        "top": "log_top-bottom",
+        "bottom": "log_top-bottom",
+        "north": "log_side",
+        "south": "log_side",
+        "east": "log_side",
+        "west": "log_side"
+      },
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0
+    },
+    {
+      "id": "minecraft:leaves",
+      "name": "Oak Leaves",
+      "hardness": 0.2,
+      "resistance": 0.2,
+      "fasterTool": "Hoe",
+      "drops": [
+        {
+          "itemId": "minecraft:leaves",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ],
+      "textures": {
+        "all": "leaves"
+      },
+      "transparent": true,
+      "solid": true,
+      "lightLevel": 0,
+      "tickable": true
+    },
+    {
+      "id": "minecraft:cobblestone",
+      "name": "Cobblestone",
+      "hardness": 1.75,
+      "resistance": 7.0,
+      "fasterTool": "Pickaxe",
+      "requiredTool": "Pickaxe",
+      "minimumToolTier": "Wood",
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0,
+      "textures": {
+        "all": "cobblestone"
+      },
+      "drops": [
+        {
+          "itemId": "minecraft:cobblestone",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ]
+    },
+    {
+      "id": "minecraft:planks",
+      "name": "Oak Planks",
+      "hardness": 1.25,
+      "resistance": 4.0,
+      "fasterTool": "Axe",
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0,
+      "textures": {
+        "all": "planks"
+      },
+      "drops": [
+        {
+          "itemId": "minecraft:planks",
+          "min": 1,
+          "max": 1,
+          "chance": 1.0
+        }
+      ]
+    },
+    {
+      "id": "minecraft:bedrock",
+      "name": "Bedrock",
+      "hardness": 9999.9,
+      "resistance": 9999.9,
+      "minimumToolTier": "Netherite",
+      "transparent": false,
+      "solid": true,
+      "lightLevel": 0,
+      "textures": {
+        "all": "bedrock"
+      },
+      "drops": []
+    }
+  ]
+}
