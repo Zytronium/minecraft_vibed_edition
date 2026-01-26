@@ -100,7 +100,24 @@ Here's a demo video for the progress so far:
 ---
 
 ### Day 3
-As of the writing of this, day 3 has just begun. I have not continued
-development yet. Currently, the only method of movement is basically 
-spectator mode. I want to add creative mode as an option. I also want to add
-a pause menu and fix camera movement.
+Day 3 was rather productive. Although the number of features pales in comparison
+to day 1, I feel like it was my most productive day yet. Mainly because I the 
+features added and updated are very nice. First, I updated the main menu:  
+
+![new main menu](readme_assets/main_menu_2.png)
+
+Second, I added **Creative Mode**! Below is a demo video for creative mode:
+[![Video demo](readme_assets/TplacIZr_thumbnail.png)](https://stellicast.com/watch/TplacIZr)
+
+Creative mode is very basic so far. There's gravity, block collisions, jumping,
+block breaking, and (dirt) block placing. You can press F (or G for some reason)
+to switch between Creative and Spectator modes.
+
+I also updated the world sizes to be a little more reasonable, as seen in the 
+first image for Day 3.
+
+I also fixed camera movement so you can freely move your mouse as far as you want
+now. 
+
+There's now a bug in 64x64 where you usually can't jump. Going down a block
+sometimes helps you be able to jump. Not sure why this happens.
