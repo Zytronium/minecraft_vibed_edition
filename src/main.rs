@@ -32,6 +32,7 @@ const STONE: &[u8] = include_bytes!("../assets/textures/stone.png");
 const LOG_TOP_BOTTOM: &[u8] = include_bytes!("../assets/textures/log_top-bottom.png");
 const LOG_SIDE: &[u8] = include_bytes!("../assets/textures/log_side.png");
 const LEAVES: &[u8] = include_bytes!("../assets/textures/leaves.png");
+const BEDROCK: &[u8] = include_bytes!("../assets/textures/bedrock.png");
 const NOT_FOUND: &[u8] = include_bytes!("../assets/textures/not_found.png");
 
 // Embed JSON data files at compile time
@@ -689,6 +690,7 @@ fn load_textures_from_map(
         ("grass_side", GRASS_SIDE),
         ("dirt", DIRT),
         ("stone", STONE),
+        ("bedrock", BEDROCK),
         ("log_top-bottom", LOG_TOP_BOTTOM),
         ("log_side", LOG_SIDE),
         ("leaves", LEAVES),
