@@ -119,6 +119,14 @@
       "maxStackSize": 64,
       "kind": "block",
       "blockId": "minecraft:planks"
+    },
+    {
+      "id": "minecraft:glass",
+      "name": "Glass",
+      "texture": "glass",
+      "maxStackSize": 64,
+      "kind": "block",
+      "blockId": "minecraft:glass"
     }
   ]
 }
