@@ -58,18 +58,10 @@ struct State {
 }
 
 impl State {
-    async fn new(window: Arc<Window>, world_size: WorldSize) -> Self {
+    async fn new(window: Arc<Window>, world_size: WorldSize, instance: wgpu::Instance, surface: wgpu::Surface<'static>) -> Self {
         let size = window.inner_size();
 
-        // Create WebGPU instance
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
-            ..Default::default()
-        });
-
-        // Create surface for rendering to the window
-        let surface = instance.create_surface(window.clone()).unwrap();
-
+        // Reuse existing instance and surface from menu
         // Request GPU adapter
         let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::default(),
@@ -312,7 +304,7 @@ impl State {
         println!("Generating world...");
         let (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices) = {
             // Create loading screen
-            let loading_screen = LoadingScreen::new(&device, &queue, config.format);
+            let mut loading_screen = LoadingScreen::new(&device, &queue, config.format);
 
             // Channels for progress updates and completion signal
             let (progress_tx, progress_rx) = mpsc::channel();
@@ -677,10 +669,10 @@ enum GameState {
 }
 
 struct MenuContext {
+    instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
-    config: wgpu::SurfaceConfiguration,
     window: Arc<Window>,
 }
 
@@ -742,7 +734,7 @@ impl ApplicationHandler for App {
             };
             surface.configure(&device, &config);
 
-            let menu = MainMenu::new(&device, &queue, surface_format);
+            let mut menu = MainMenu::new(&device, &queue, surface_format, size.width, size.height);
             let num_indices = menu.update_geometry(&queue);
 
             // Render initial menu
@@ -754,10 +746,10 @@ impl ApplicationHandler for App {
 
             self.menu = Some(menu);
             self.menu_ctx = Some(MenuContext {
+                instance,
                 surface,
                 device,
                 queue,
-                config,
                 window,
             });
         }
@@ -766,48 +758,10 @@ impl ApplicationHandler for App {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _window_id: winit::window::WindowId, event: WindowEvent) {
         match self.game_state {
             GameState::Menu => {
-                if let Some(menu) = &mut self.menu {
-                    match event {
-                        WindowEvent::CloseRequested => event_loop.exit(),
-                        WindowEvent::KeyboardInput {
-                            event: KeyEvent {
-                                physical_key: PhysicalKey::Code(key),
-                                state: ElementState::Pressed,
-                                ..
-                            },
-                            ..
-                        } => {
-                            match key {
-                                KeyCode::ArrowUp => menu.move_selection_up(),
-                                KeyCode::ArrowDown => menu.move_selection_down(),
-                                KeyCode::Enter => {
-                                    // Start world generation
-                                    let selected_size = menu.get_selected_size();
-                                    println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
-
-                                    if let Some(ctx) = self.menu_ctx.take() {
-                                        self.state = Some(pollster::block_on(State::new(ctx.window, selected_size)));
-                                        self.menu = None;
-                                        self.game_state = GameState::Playing;
-                                    }
-
-                                    return;
-                                }
-                                KeyCode::Escape => event_loop.exit(),
-                                _ => {}
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            GameState::Playing => {
-        if let Some(state) = &mut self.state {
-            if !state.input(&event) {
                 match event {
                     WindowEvent::CloseRequested => event_loop.exit(),
                     WindowEvent::RedrawRequested => {
-                        if let (Some(menu), Some(ctx)) = (&self.menu, &self.menu_ctx) {
+                        if let (Some(menu), Some(ctx)) = (&mut self.menu, &self.menu_ctx) {
                             let num_indices = menu.update_geometry(&ctx.queue);
                             if let Ok(output) = ctx.surface.get_current_texture() {
                                 let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -816,44 +770,100 @@ impl ApplicationHandler for App {
                             }
                         }
                     }
-                    WindowEvent::Resized(physical_size) => {
-                        state.resize(physical_size);
-                    }
-                    WindowEvent::CursorMoved { position, .. } => {
-                        state.mouse_moved((position.x, position.y));
-                    }
-                    WindowEvent::RedrawRequested => {
-                        let now = std::time::Instant::now();
-                        let dt = (now - self.last_render_time).as_secs_f32();
-                        self.last_render_time = now;
+                    WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            physical_key: PhysicalKey::Code(key),
+                            state: ElementState::Pressed,
+                            ..
+                        },
+                        ..
+                    } => {
+                        match key {
+                            KeyCode::ArrowUp => {
+                                if let Some(menu) = &mut self.menu {
+                                    menu.move_selection_up();
+                                    if let Some(ctx) = &self.menu_ctx {
+                                        ctx.window.request_redraw();
+                                    }
+                                }
+                            }
+                            KeyCode::ArrowDown => {
+                                if let Some(menu) = &mut self.menu {
+                                    menu.move_selection_down();
+                                    if let Some(ctx) = &self.menu_ctx {
+                                        ctx.window.request_redraw();
+                                    }
+                                }
+                            }
+                            KeyCode::Enter => {
+                                if let Some(menu) = &self.menu {
+                                    let selected_size = menu.get_selected_size();
+                                    println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
 
-                        state.update(dt);
-                        match state.render() {
-                            Ok(_) => {}
-                            Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                            Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
-                            Err(e) => eprintln!("{:?}", e),
+                                    if let Some(ctx) = self.menu_ctx.take() {
+                                        // Reuse instance and surface from menu
+                                        // Create new device with texture array features needed for the game
+                                        self.state = Some(pollster::block_on(State::new(
+                                            ctx.window,
+                                            selected_size,
+                                            ctx.instance,
+                                            ctx.surface
+                                        )));
+                                        self.menu = None;
+                                        self.game_state = GameState::Playing;
+                                    }
+                                }
+                            }
+                            KeyCode::Escape => event_loop.exit(),
+                            _ => {}
                         }
-                        state.window.request_redraw();
                     }
                     _ => {}
                 }
             }
-        }
-    }
+            GameState::Playing => {
+                if let Some(state) = &mut self.state {
+                    if !state.input(&event) {
+                        match event {
+                            WindowEvent::CloseRequested => event_loop.exit(),
+                            WindowEvent::Resized(physical_size) => {
+                                state.resize(physical_size);
+                            }
+                            WindowEvent::CursorMoved { position, .. } => {
+                                state.mouse_moved((position.x, position.y));
+                            }
+                            WindowEvent::RedrawRequested => {
+                                let now = std::time::Instant::now();
+                                let dt = (now - self.last_render_time).as_secs_f32();
+                                self.last_render_time = now;
+
+                                state.update(dt);
+                                match state.render() {
+                                    Ok(_) => {}
+                                    Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                                    Err(e) => eprintln!("{:?}", e),
+                                }
+                                state.window.request_redraw();
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
         }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
         match self.game_state {
-            GameState::Playing => {
-        if let Some(state) = &self.state {
-            state.window.request_redraw();
-        }
-    }
             GameState::Menu => {
                 if let Some(ctx) = &self.menu_ctx {
                     ctx.window.request_redraw();
+                }
+            }
+            GameState::Playing => {
+                if let Some(state) = &self.state {
+                    state.window.request_redraw();
                 }
             }
         }

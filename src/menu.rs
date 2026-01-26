@@ -1,20 +1,33 @@
-/// Menu state for world size selection
+use glyphon::{
+    Attrs, Buffer, Color as GlyphonColor, Family, FontSystem, Metrics,
+    Shaping, SwashCache, TextArea, TextAtlas, TextBounds, TextRenderer, Viewport,
+};
+
+const FONT: &[u8] = include_bytes!("../assets/fonts/font.ttf");
+const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
+
 pub struct MainMenu {
     pipeline: wgpu::RenderPipeline,
-    white_bind_group: wgpu::BindGroup,
     dirt_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     selected_option: usize,
+
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: TextAtlas,
+    viewport: Viewport,
+    text_renderer: TextRenderer,
+    buffers: Vec<Buffer>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum WorldSize {
-    Small,      // 8x8 chunks
-    Medium,     // 16x16 chunks
-    Large,      // 32x32 chunks
-    Enormous,   // 64x64 chunks
-    Overkill,   // 1024x1024 chunks
+    Small,
+    Medium,
+    Large,
+    Enormous,
+    Overkill,
 }
 
 impl WorldSize {
@@ -39,8 +52,6 @@ impl WorldSize {
         }
     }
 }
-
-const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
 
 #[repr(C)]
 #[derive(Copy, Clone, Debug, bytemuck::Pod, bytemuck::Zeroable)]
@@ -77,14 +88,9 @@ impl MenuVertex {
 }
 
 impl MainMenu {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat) -> Self {
-        // Load dirt texture for background
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
         let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "menu_dirt");
         let dirt_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
-
-        // Create white texture for solid colors
-        let white_texture = create_white_texture(device, queue);
-        let white_view = white_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -133,21 +139,6 @@ impl MainMenu {
             label: Some("menu_dirt_bind_group"),
         });
 
-        let white_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&white_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-            ],
-            label: Some("menu_white_bind_group"),
-        });
-
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Menu Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("loading.wgsl").into()),
@@ -193,29 +184,85 @@ impl MainMenu {
             cache: None,
         });
 
-        let max_vertices = 1000;
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Menu Vertex Buffer"),
-            size: (max_vertices * std::mem::size_of::<MenuVertex>()) as u64,
+            size: (1000 * std::mem::size_of::<MenuVertex>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let max_indices = 2000;
         let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Menu Index Buffer"),
-            size: (max_indices * std::mem::size_of::<u32>()) as u64,
+            size: (2000 * std::mem::size_of::<u32>()) as u64,
             usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
+        // Initialize text rendering
+        let mut font_system = FontSystem::new();
+        font_system.db_mut().load_font_data(FONT.to_vec());
+
+        let swash_cache = SwashCache::new();
+        let cache = glyphon::Cache::new(device);
+        let mut viewport = Viewport::new(device, &cache);
+        // CRITICAL FIX: Update viewport with actual window dimensions
+        viewport.update(queue, glyphon::Resolution { width, height });
+
+        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        let text_renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+
+        // Use the loaded font by specifying Family::Name with the font family name
+        // Most fonts will work with their family name, but we can also use Family::SansSerif as fallback
+        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+
+        // Create text buffers
+        let mut buffers = Vec::new();
+
+        // Title
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(60.0, 70.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "Minecraft: Vibed Edition", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        // Subtitle
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(40.0, 50.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "Select World Size", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        // Options
+        let options = [
+            "Small (8x8 chunks)",
+            "Medium (16x16 chunks)",
+            "Large (32x32 chunks)",
+            "Enormous (64x64 chunks)",
+            "Overkill (1024x1024 chunks)",
+        ];
+        for option in options {
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(35.0, 45.0));
+            buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+            buffer.set_text(&mut font_system, option, font_attrs, Shaping::Advanced);
+            buffers.push(buffer);
+        }
+
+        // Instructions
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(25.0, 35.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "Use arrow keys, then press ENTER", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
         Self {
             pipeline,
-            white_bind_group,
             dirt_bind_group,
             vertex_buffer,
             index_buffer,
-            selected_option: 1, // Default to Medium
+            selected_option: 1,
+            font_system,
+            swash_cache,
+            atlas,
+            viewport,
+            text_renderer,
+            buffers,
         }
     }
 
@@ -236,13 +283,20 @@ impl MainMenu {
     }
 
     pub fn update_geometry(&self, queue: &wgpu::Queue) -> usize {
-        let (vertices, indices) = create_menu_geometry(self.selected_option);
-        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        let bg_verts = [
+            MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+        ];
+        let indices = [0u32, 1, 2, 2, 3, 0];
+
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&bg_verts));
         queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
-        indices.len()
+        6
     }
 
-    pub fn render(&self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, num_indices: usize) {
+    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, _num_indices: usize) {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Menu Render Encoder"),
         });
@@ -266,199 +320,97 @@ impl MainMenu {
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-
-            // Draw background with dirt texture
             render_pass.set_bind_group(0, &self.dirt_bind_group, &[]);
             render_pass.draw_indexed(0..6, 0, 0..1);
+        }
 
-            // Draw UI elements with white texture
-            if num_indices > 6 {
-                render_pass.set_bind_group(0, &self.white_bind_group, &[]);
-                render_pass.draw_indexed(6..num_indices as u32, 0, 0..1);
-            }
+        // Prepare text areas
+        let mut text_areas = vec![
+            TextArea {
+                buffer: &self.buffers[0],
+                left: 340.0,
+                top: 100.0,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                default_color: GlyphonColor::rgb(255, 255, 255),
+                custom_glyphs: &[],
+            },
+            TextArea {
+                buffer: &self.buffers[1],
+                left: 440.0,
+                top: 200.0,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                default_color: GlyphonColor::rgb(204, 204, 204),
+                custom_glyphs: &[],
+            },
+        ];
+
+        // Options
+        for i in 0..5 {
+            let y = 300.0 + i as f32 * 60.0;
+            let color = if i == self.selected_option {
+                GlyphonColor::rgb(255, 255, 0)
+            } else {
+                GlyphonColor::rgb(230, 230, 230)
+            };
+
+            text_areas.push(TextArea {
+                buffer: &self.buffers[2 + i],
+                left: 480.0,
+                top: y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+                default_color: color,
+                custom_glyphs: &[],
+            });
+        }
+
+        // Instructions
+        text_areas.push(TextArea {
+            buffer: &self.buffers[7],
+            left: 380.0,
+            top: 650.0,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: 1280, bottom: 720 },
+            default_color: GlyphonColor::rgb(153, 153, 153),
+            custom_glyphs: &[],
+        });
+
+        // Prepare text areas
+        self.text_renderer
+            .prepare(
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )
+            .unwrap();
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass).unwrap();
         }
 
         queue.submit(std::iter::once(encoder.finish()));
     }
-}
-
-fn create_menu_geometry(selected_index: usize) -> (Vec<MenuVertex>, Vec<u32>) {
-    let mut vertices = Vec::new();
-    let mut indices = Vec::new();
-
-    // Background
-    let bg_verts = [
-        MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-        MenuVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-        MenuVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-        MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-    ];
-    let base = vertices.len() as u32;
-    vertices.extend_from_slice(&bg_verts);
-    indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-
-    // Title: "Minecraft: Vibed Edition"
-    let title = "Minecraft: Vibed Edition";
-    let char_width = 0.028;
-    let char_height = 0.045;
-    let title_y = 0.6;
-    let title_width = title.len() as f32 * char_width;
-    let start_x = -title_width / 2.0;
-
-    for (i, c) in title.chars().enumerate() {
-        if c == ' ' || c == ':' {
-            continue;
-        }
-        let x = start_x + i as f32 * char_width;
-        let width = char_width * 0.8;
-
-        let verts = [
-            MenuVertex { position: [x, title_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [x + width, title_y - char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [x + width, title_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [x, title_y + char_height / 2.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-        ];
-        let base = vertices.len() as u32;
-        vertices.extend_from_slice(&verts);
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-    }
-
-    // Subtitle
-    let subtitle = "Select World Size";
-    let subtitle_y = 0.45;
-    let subtitle_width = subtitle.len() as f32 * char_width * 0.7;
-    let subtitle_x = -subtitle_width / 2.0;
-
-    for (i, c) in subtitle.chars().enumerate() {
-        if c == ' ' {
-            continue;
-        }
-        let x = subtitle_x + i as f32 * char_width * 0.7;
-        let width = char_width * 0.6;
-
-        let verts = [
-            MenuVertex { position: [x, subtitle_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
-            MenuVertex { position: [x + width, subtitle_y - char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
-            MenuVertex { position: [x + width, subtitle_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
-            MenuVertex { position: [x, subtitle_y + char_height * 0.35], tex_coords: [0.0, 0.0], color: [0.8, 0.8, 0.8, 1.0] },
-        ];
-        let base = vertices.len() as u32;
-        vertices.extend_from_slice(&verts);
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-    }
-
-    // Menu options
-    let options = [
-        "Small (8x8 chunks)",
-        "Medium (16x16 chunks)",
-        "Large (32x32 chunks)",
-        "Enormous (64x64 chunks)",
-        "Overkill (1024x1024 chunks)",
-    ];
-
-    let option_start_y = 0.2;
-    let option_spacing = 0.12;
-
-    for (idx, option) in options.iter().enumerate() {
-        let y = option_start_y - idx as f32 * option_spacing;
-        let is_selected = idx == selected_index;
-
-        // Selection highlight
-        if is_selected {
-            let highlight_width = 0.5;
-            let highlight_height = 0.055;
-            let highlight_verts = [
-                MenuVertex { position: [-highlight_width, y - highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
-                MenuVertex { position: [ highlight_width, y - highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
-                MenuVertex { position: [ highlight_width, y + highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
-                MenuVertex { position: [-highlight_width, y + highlight_height], tex_coords: [0.0, 0.0], color: [0.3, 0.5, 0.3, 0.8] },
-            ];
-            let base = vertices.len() as u32;
-            vertices.extend_from_slice(&highlight_verts);
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-        }
-
-        // Option text
-        let color = if is_selected { [1.0, 1.0, 0.0, 1.0] } else { [0.9, 0.9, 0.9, 1.0] };
-        let text_width = option.len() as f32 * char_width * 0.6;
-        let text_x = -text_width / 2.0;
-
-        for (i, c) in option.chars().enumerate() {
-            if c == ' ' || c == '(' || c == ')' {
-                continue;
-            }
-            let x = text_x + i as f32 * char_width * 0.6;
-            let width = char_width * 0.5;
-
-            let verts = [
-                MenuVertex { position: [x, y - char_height * 0.35], tex_coords: [0.0, 0.0], color },
-                MenuVertex { position: [x + width, y - char_height * 0.35], tex_coords: [0.0, 0.0], color },
-                MenuVertex { position: [x + width, y + char_height * 0.35], tex_coords: [0.0, 0.0], color },
-                MenuVertex { position: [x, y + char_height * 0.35], tex_coords: [0.0, 0.0], color },
-            ];
-            let base = vertices.len() as u32;
-            vertices.extend_from_slice(&verts);
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-        }
-    }
-
-    // Instructions
-    let instructions = "Use arrow keys, then press ENTER";
-    let instr_y = -0.6;
-    let instr_width = instructions.len() as f32 * char_width * 0.5;
-    let instr_x = -instr_width / 2.0;
-
-    for (i, c) in instructions.chars().enumerate() {
-        if c == ' ' || c == ',' {
-            continue;
-        }
-        let x = instr_x + i as f32 * char_width * 0.5;
-        let width = char_width * 0.4;
-
-        let verts = [
-            MenuVertex { position: [x, instr_y - char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
-            MenuVertex { position: [x + width, instr_y - char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
-            MenuVertex { position: [x + width, instr_y + char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
-            MenuVertex { position: [x, instr_y + char_height * 0.3], tex_coords: [0.0, 0.0], color: [0.6, 0.6, 0.6, 1.0] },
-        ];
-        let base = vertices.len() as u32;
-        vertices.extend_from_slice(&verts);
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
-    }
-
-    (vertices, indices)
-}
-
-fn create_white_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
-    let data = [255u8, 255, 255, 255];
-    let texture = device.create_texture(&wgpu::TextureDescriptor {
-        label: Some("Menu White Texture"),
-        size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        mip_level_count: 1,
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        view_formats: &[],
-    });
-
-    queue.write_texture(
-        wgpu::ImageCopyTexture {
-            texture: &texture,
-            mip_level: 0,
-            origin: wgpu::Origin3d::ZERO,
-            aspect: wgpu::TextureAspect::All,
-        },
-        &data,
-        wgpu::ImageDataLayout {
-            offset: 0,
-            bytes_per_row: Some(4),
-            rows_per_image: Some(1),
-        },
-        wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-    );
-
-    texture
 }
 
 fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> wgpu::Texture {
