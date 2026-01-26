@@ -18,8 +18,8 @@ pub struct Chunk {
 
 /// World containing all chunks with cross-chunk block access
 pub struct World {
-    chunks: HashMap<(i32, i32), Chunk>,
-    registry: Arc<BlockRegistry>,
+    pub chunks: HashMap<(i32, i32), Chunk>,
+    pub registry: Arc<BlockRegistry>,
 }
 
 /// Per-chunk mesh data to avoid creating massive monolithic buffers
@@ -41,7 +41,7 @@ fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
 }
 
 impl World {
-    fn new(registry: Arc<BlockRegistry>) -> Self {
+    pub fn new(registry: Arc<BlockRegistry>) -> Self {
         Self {
             chunks: HashMap::new(),
             registry,
@@ -68,7 +68,7 @@ impl World {
     }
 
     /// Set block at world coordinates, works across chunk boundaries
-    fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
+    pub fn set_block(&mut self, x: i32, y: i32, z: i32, block: BlockType) {
         if y < 0 || y >= CHUNK_HEIGHT as i32 {
             return;
         }
@@ -90,7 +90,7 @@ impl World {
         world_size_chunks: i32,
         registry: Arc<BlockRegistry>,
         mut progress_callback: F
-    ) -> Vec<ChunkMeshData>
+    ) -> (Self, Vec<ChunkMeshData>)
     where
         F: FnMut(usize, usize),
     {
@@ -190,7 +190,26 @@ impl World {
             }
         }
 
-        chunk_meshes
+        (world, chunk_meshes)
+    }
+
+    /// Regenerate mesh for a specific chunk after block modifications
+    /// Returns new mesh data for that chunk
+    pub fn regenerate_chunk_mesh(&self, chunk_x: i32, chunk_z: i32) -> Option<ChunkMeshData> {
+        if let Some(chunk) = self.chunks.get(&(chunk_x, chunk_z)) {
+            let (opaque_verts, opaque_idx, trans_verts, trans_idx) = chunk.generate_mesh(self);
+
+            Some(ChunkMeshData {
+                opaque_vertices: opaque_verts,
+                opaque_indices: opaque_idx,
+                transparent_vertices: trans_verts,
+                transparent_indices: trans_idx,
+                chunk_x,
+                chunk_z,
+            })
+        } else {
+            None
+        }
     }
 }
 

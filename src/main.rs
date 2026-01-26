@@ -18,10 +18,36 @@ use std::sync::Arc;
 
 use camera::Camera;
 use vertex::Vertex;
-use world::World;
+use world::{World, ChunkMeshData};
 use loading::LoadingScreen;
 use menu::{MainMenu, WorldSize};
 use std::sync::mpsc;
+
+/// Game mode - Creative or Spectator
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GameMode {
+    Creative,   // Gravity, collision, block interaction
+    Spectator,  // No gravity, no collision, fly through blocks
+}
+
+/// Player physics state for Creative mode
+struct PlayerState {
+    velocity: glam::Vec3,
+    on_ground: bool,
+    is_flying: bool,
+    physics_enabled: bool,  // Disable physics during world generation
+}
+
+impl PlayerState {
+    fn new() -> Self {
+        Self {
+            velocity: glam::Vec3::ZERO,
+            on_ground: false,
+            is_flying: false,
+            physics_enabled: false,  // Start disabled until we find ground
+        }
+    }
+}
 
 // Embed all textures at compile time
 const GRASS_TOP: &[u8] = include_bytes!("../assets/textures/grass_top.png");
@@ -63,14 +89,15 @@ struct State {
     render_pipeline_opaque: wgpu::RenderPipeline,
     render_pipeline_transparent: wgpu::RenderPipeline,
     chunk_meshes: Vec<ChunkMesh>,  // Separate buffers for each chunk
+    world: World,  // Keep world for block modifications
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
     texture_bind_group: wgpu::BindGroup,
     keys_pressed: std::collections::HashSet<KeyCode>,
-    mouse_pressed: bool,
-    last_mouse_pos: Option<(f64, f64)>,
     window: Arc<Window>,
+    game_mode: GameMode,
+    player_state: PlayerState,
 }
 
 impl State {
@@ -196,7 +223,7 @@ impl State {
         });
 
         // Initialize camera
-        let camera = Camera::new(size.width as f32 / size.height as f32, world_size.get_chunks());
+        let mut camera = Camera::new(size.width as f32 / size.height as f32, world_size.get_chunks());
 
         // Create buffer to hold camera matrix on GPU
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -327,7 +354,7 @@ impl State {
 
         // Generate world with loading screen - NON-BLOCKING
         println!("Generating world...");
-        let chunk_meshes = {
+        let generation_result = {
             // Create loading screen
             let mut loading_screen = LoadingScreen::new(&device, &queue, config.format);
 
@@ -384,7 +411,7 @@ impl State {
                 }
 
                 // Check if generation is complete
-                if let Ok(chunk_mesh_data) = done_rx.try_recv() {
+                if let Ok((world_data, chunk_mesh_data)) = done_rx.try_recv() {
                     // Render final loading screen at 100%
                     let total_chunks = (world_size_chunks * world_size_chunks) as usize;
                     num_indices = loading_screen.update_progress(&queue, 1.0, total_chunks, total_chunks);
@@ -395,13 +422,16 @@ impl State {
                     }
                     // Small delay so user can see 100%
                     std::thread::sleep(std::time::Duration::from_millis(200));
-                    break chunk_mesh_data;
+                    break (world_data, chunk_mesh_data);
                 }
 
                 // Small sleep to prevent busy-waiting
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
         };
+
+        // Destructure the tuple
+        let (world_data, chunk_meshes) = generation_result;
 
         // Convert per-chunk mesh data into GPU buffers
         // IMPORTANT: Each chunk gets its own set of buffers to avoid hitting GPU limits
@@ -454,6 +484,47 @@ impl State {
         println!("Generated {} chunks with {} opaque vertices, {} transparent vertices",
                  gpu_chunk_meshes.len(), total_opaque_verts, total_transparent_verts);
 
+        // Lock cursor for FPS-style mouse look (allows infinite movement)
+        let _ = window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+            .or_else(|_| window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+        window.set_cursor_visible(false);
+
+        // Find actual ground level at spawn position and place player on top
+        let spawn_x = (world_size.get_chunks() * world::CHUNK_WIDTH as i32 / 2) as i32;
+        let spawn_z = (world_size.get_chunks() * world::CHUNK_WIDTH as i32 / 2) as i32;
+        let mut spawn_y = None;
+
+        println!("Searching for ground at spawn location ({}, ?, {})", spawn_x, spawn_z);
+
+        // Scan downward from top of world to find first non-air block
+        for y in (0..world::CHUNK_HEIGHT as i32).rev() {
+            let block = world_data.get_block(spawn_x, y, spawn_z);
+            if block != block::BlockType::air() {
+                spawn_y = Some(y + 1); // Spawn with feet 1 block above ground (standing on top of it)
+                println!("Found ground block at Y={}, spawning player feet at Y={}", y, y + 1);
+                break;
+            }
+        }
+
+        // Fallback if no ground found (shouldn't happen, but just in case)
+        let spawn_y = spawn_y.unwrap_or_else(|| {
+            eprintln!("ERROR: No ground found at spawn location ({}, {})! Using fallback Y=80", spawn_x, spawn_z);
+            eprintln!("This suggests the world data may not be properly initialized.");
+            80
+        });
+
+        // Update camera position to actual spawn point (add eye height)
+        camera.position = glam::Vec3::new(spawn_x as f32 + 0.5, spawn_y as f32 + 1.62, spawn_z as f32 + 0.5);
+        println!("===== SPAWN INFO =====");
+        println!("Player spawned at: ({:.1}, {:.1}, {:.1})", camera.position.x, camera.position.y, camera.position.z);
+        println!("Feet position: Y={}", spawn_y);
+        println!("Ground level: Y={}", spawn_y - 1);
+        println!("======================");
+
+        let mut player_state = PlayerState::new();
+        player_state.physics_enabled = true; // Enable physics now that world is ready
+        player_state.on_ground = true; // Start on ground to prevent immediate falling
+
         Self {
             surface,
             device,
@@ -463,14 +534,15 @@ impl State {
             render_pipeline_opaque,
             render_pipeline_transparent,
             chunk_meshes: gpu_chunk_meshes,
+            world: world_data,
             camera,
             camera_buffer,
             camera_bind_group,
             texture_bind_group,
             keys_pressed: std::collections::HashSet::new(),
-            mouse_pressed: false,
-            last_mouse_pos: None,
             window,
+            game_mode: GameMode::Creative,
+            player_state,
         }
     }
 
@@ -500,6 +572,38 @@ impl State {
                 let is_pressed = *state == ElementState::Pressed;
                 if is_pressed {
                     self.keys_pressed.insert(*key);
+
+                    // Toggle game mode with G key
+                    if *key == KeyCode::KeyG {
+                        self.game_mode = match self.game_mode {
+                            GameMode::Creative => GameMode::Spectator,
+                            GameMode::Spectator => GameMode::Creative,
+                        };
+                        println!("Game mode: {:?}", self.game_mode);
+                    }
+
+                    // Toggle flying in Creative mode with F key
+                    if *key == KeyCode::KeyF && self.game_mode == GameMode::Creative {
+                        self.player_state.is_flying = !self.player_state.is_flying;
+                        if self.player_state.is_flying {
+                            self.player_state.velocity.y = 0.0; // Stop falling when starting to fly
+                        }
+                        println!("Flying: {}", self.player_state.is_flying);
+                    }
+
+                    // Release cursor with Escape key
+                    if *key == KeyCode::Escape {
+                        let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
+                        self.window.set_cursor_visible(true);
+                        println!("Cursor released - press any movement key to recapture");
+                    }
+
+                    // Recapture cursor when any movement key is pressed
+                    if matches!(key, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD | KeyCode::Space | KeyCode::ShiftLeft) {
+                        let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                            .or_else(|_| self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                        self.window.set_cursor_visible(false);
+                    }
                 } else {
                     self.keys_pressed.remove(key);
                 }
@@ -507,18 +611,21 @@ impl State {
             }
             WindowEvent::MouseInput {
                 state,
-                button: MouseButton::Right,
+                button,
                 ..
             } => {
-                // Right mouse button enables mouse look
-                self.mouse_pressed = *state == ElementState::Pressed;
-                if self.mouse_pressed {
-                    let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined);
-                    self.window.set_cursor_visible(false);
-                } else {
-                    let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                    self.window.set_cursor_visible(true);
-                    self.last_mouse_pos = None;
+                if *state == ElementState::Pressed {
+                    match button {
+                        MouseButton::Left => {
+                            // Break block
+                            self.break_block();
+                        }
+                        MouseButton::Right => {
+                            // Place block
+                            self.place_block();
+                        }
+                        _ => {}
+                    }
                 }
                 true
             }
@@ -526,30 +633,60 @@ impl State {
         }
     }
 
-    /// Update game state (camera movement)
+    /// Update game state (camera movement, physics)
     fn update(&mut self, dt: f32) {
-        let speed = 10.0 * dt;  // Movement speed (blocks per second)
+        match self.game_mode {
+            GameMode::Spectator => {
+                // Spectator mode - free flight, no physics
+                let speed = 10.0 * dt;
 
-        // WASD movement
-        if self.keys_pressed.contains(&KeyCode::KeyW) {
-            self.camera.position += self.camera.forward() * speed;
-        }
-        if self.keys_pressed.contains(&KeyCode::KeyS) {
-            self.camera.position -= self.camera.forward() * speed;
-        }
-        if self.keys_pressed.contains(&KeyCode::KeyA) {
-            self.camera.position -= self.camera.right() * speed;
-        }
-        if self.keys_pressed.contains(&KeyCode::KeyD) {
-            self.camera.position += self.camera.right() * speed;
-        }
+                if self.keys_pressed.contains(&KeyCode::KeyW) {
+                    self.camera.position += self.camera.forward() * speed;
+                }
+                if self.keys_pressed.contains(&KeyCode::KeyS) {
+                    self.camera.position -= self.camera.forward() * speed;
+                }
+                if self.keys_pressed.contains(&KeyCode::KeyA) {
+                    self.camera.position -= self.camera.right() * speed;
+                }
+                if self.keys_pressed.contains(&KeyCode::KeyD) {
+                    self.camera.position += self.camera.right() * speed;
+                }
+                if self.keys_pressed.contains(&KeyCode::Space) {
+                    self.camera.position.y += speed;
+                }
+                if self.keys_pressed.contains(&KeyCode::ShiftLeft) {
+                    self.camera.position.y -= speed;
+                }
+            }
+            GameMode::Creative => {
+                // Creative mode - physics-based movement
+                if self.player_state.physics_enabled {
+                    self.update_physics(dt);
+                } else {
+                    // Physics not yet enabled (world still generating) - use spectator controls
+                    let speed = 10.0 * dt;
 
-        // Space/Shift for up/down
-        if self.keys_pressed.contains(&KeyCode::Space) {
-            self.camera.position.y += speed;
-        }
-        if self.keys_pressed.contains(&KeyCode::ShiftLeft) {
-            self.camera.position.y -= speed;
+                    if self.keys_pressed.contains(&KeyCode::KeyW) {
+                        self.camera.position += self.camera.forward() * speed;
+                    }
+                    if self.keys_pressed.contains(&KeyCode::KeyS) {
+                        self.camera.position -= self.camera.forward() * speed;
+                    }
+                    if self.keys_pressed.contains(&KeyCode::KeyA) {
+                        self.camera.position -= self.camera.right() * speed;
+                    }
+                    if self.keys_pressed.contains(&KeyCode::KeyD) {
+                        self.camera.position += self.camera.right() * speed;
+                    }
+                    if self.keys_pressed.contains(&KeyCode::Space) {
+                        self.camera.position.y += speed;
+                    }
+                    if self.keys_pressed.contains(&KeyCode::ShiftLeft) {
+                        self.camera.position.y -= speed;
+                    }
+                }
+            }
         }
 
         // Update camera matrix on GPU
@@ -560,29 +697,297 @@ impl State {
         );
     }
 
-    /// Handle mouse movement for camera look
-    fn mouse_moved(&mut self, position: (f64, f64)) {
-        if !self.mouse_pressed {
-            return;
+    /// Update physics for Creative mode (gravity, collision, movement)
+    fn update_physics(&mut self, dt: f32) {
+        use glam::Vec3;
+
+        // Player dimensions (Minecraft-like)
+        const PLAYER_WIDTH: f32 = 0.6;
+        const PLAYER_HEIGHT: f32 = 1.8;
+        const PLAYER_EYE_HEIGHT: f32 = 1.62; // Eye level is slightly below top of head
+
+        // Physics constants
+        const GRAVITY: f32 = -32.0; // blocks/s² (increased from -20 for faster falling)
+        const TERMINAL_VELOCITY: f32 = -78.0; // blocks/s (increased from -40)
+        const JUMP_VELOCITY: f32 = 9.5; // blocks/s
+        const WALK_SPEED: f32 = 4.3; // blocks/s
+        const FLY_SPEED: f32 = 10.9; // blocks/s (creative flying)
+        const AIR_CONTROL: f32 = 0.8; // Increased from 0.2 - good air control
+
+        // Calculate player's feet position (camera is at eye level)
+        let feet_pos = self.camera.position - Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+
+        if self.player_state.is_flying {
+            // Flying mode - simple movement in all directions
+            let speed = FLY_SPEED * dt;
+
+            let mut fly_dir = Vec3::ZERO;
+            if self.keys_pressed.contains(&KeyCode::KeyW) {
+                fly_dir += self.camera.forward();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyS) {
+                fly_dir -= self.camera.forward();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyA) {
+                fly_dir -= self.camera.right();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyD) {
+                fly_dir += self.camera.right();
+            }
+            if self.keys_pressed.contains(&KeyCode::Space) {
+                fly_dir.y += 1.0;
+            }
+            if self.keys_pressed.contains(&KeyCode::ShiftLeft) {
+                fly_dir.y -= 1.0;
+            }
+
+            if fly_dir.length_squared() > 0.0 {
+                fly_dir = fly_dir.normalize();
+            }
+
+            self.camera.position += fly_dir * speed;
+            self.player_state.velocity = Vec3::ZERO;
+            self.player_state.on_ground = false;
+        } else {
+            // Walking mode - apply gravity and ground physics
+
+            // Horizontal movement
+            let mut move_dir = Vec3::ZERO;
+            if self.keys_pressed.contains(&KeyCode::KeyW) {
+                move_dir += self.camera.forward();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyS) {
+                move_dir -= self.camera.forward();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyA) {
+                move_dir -= self.camera.right();
+            }
+            if self.keys_pressed.contains(&KeyCode::KeyD) {
+                move_dir += self.camera.right();
+            }
+
+            // Normalize diagonal movement
+            if move_dir.length_squared() > 0.0 {
+                move_dir = move_dir.normalize();
+            }
+
+            // Check if on ground BEFORE applying movement
+            self.player_state.on_ground = self.is_on_ground(feet_pos, PLAYER_WIDTH, PLAYER_HEIGHT);
+
+            // Apply gravity
+            if !self.player_state.on_ground {
+                self.player_state.velocity.y += GRAVITY * dt;
+                if self.player_state.velocity.y < TERMINAL_VELOCITY {
+                    self.player_state.velocity.y = TERMINAL_VELOCITY;
+                }
+            } else {
+                // On ground - no falling
+                self.player_state.velocity.y = 0.0;
+            }
+
+            // Jump
+            if self.keys_pressed.contains(&KeyCode::Space) && self.player_state.on_ground {
+                self.player_state.velocity.y = JUMP_VELOCITY;
+                self.player_state.on_ground = false;
+            }
+
+            // Calculate movement
+            let horizontal_speed = if self.player_state.on_ground { WALK_SPEED } else { WALK_SPEED * AIR_CONTROL };
+
+            // Move horizontally (with collision)
+            let horizontal_velocity = move_dir * horizontal_speed * dt;
+            let mut new_feet_pos = feet_pos;
+
+            // Move X
+            new_feet_pos.x += horizontal_velocity.x;
+            if self.check_collision_at(new_feet_pos, PLAYER_WIDTH, PLAYER_HEIGHT) {
+                new_feet_pos.x = feet_pos.x; // Cancel X movement
+            }
+
+            // Move Z
+            new_feet_pos.z += horizontal_velocity.z;
+            if self.check_collision_at(new_feet_pos, PLAYER_WIDTH, PLAYER_HEIGHT) {
+                new_feet_pos.z = feet_pos.z; // Cancel Z movement
+            }
+
+            // Move Y (gravity/jumping)
+            new_feet_pos.y += self.player_state.velocity.y * dt;
+            if self.check_collision_at(new_feet_pos, PLAYER_WIDTH, PLAYER_HEIGHT) {
+                new_feet_pos.y = feet_pos.y; // Cancel Y movement
+                self.player_state.velocity.y = 0.0; // Stop vertical velocity
+            }
+
+            // Update camera position (eye level)
+            self.camera.position = new_feet_pos + Vec3::new(0.0, PLAYER_EYE_HEIGHT, 0.0);
+        }
+    }
+
+    /// Check if player bounding box collides with any solid blocks at given position
+    /// Uses proper AABB-to-block collision: checks ALL blocks the bounding box overlaps
+    fn check_collision_at(&self, feet_pos: glam::Vec3, width: f32, height: f32) -> bool {
+        let half_width = width / 2.0;
+
+        // Calculate the bounding box in block coordinates
+        let min_x = (feet_pos.x - half_width).floor() as i32;
+        let max_x = (feet_pos.x + half_width).ceil() as i32;
+        let min_y = feet_pos.y.floor() as i32;
+        let max_y = (feet_pos.y + height).ceil() as i32;
+        let min_z = (feet_pos.z - half_width).floor() as i32;
+        let max_z = (feet_pos.z + half_width).ceil() as i32;
+
+        // Check every block that the player's bounding box overlaps
+        for x in min_x..max_x {
+            for y in min_y..max_y {
+                for z in min_z..max_z {
+                    let block = self.world.get_block(x, y, z);
+                    if block != block::BlockType::air() {
+                        return true; // Collision detected
+                    }
+                }
+            }
         }
 
-        if let Some(last_pos) = self.last_mouse_pos {
-            let dx = (position.0 - last_pos.0) as f32;
-            let dy = (position.1 - last_pos.1) as f32;
+        false // No collision
+    }
 
-            // Mouse sensitivity
-            let sensitivity = 0.002;
-            self.camera.yaw += dx * sensitivity;
-            self.camera.pitch -= dy * sensitivity;
+    /// Check if player is standing on ground
+    fn is_on_ground(&self, feet_pos: glam::Vec3, width: f32, _height: f32) -> bool {
+        let half_width = width / 2.0;
 
-            // Clamp pitch to prevent flipping upside down
-            self.camera.pitch = self.camera.pitch.clamp(
-                -89.0_f32.to_radians(),
-                89.0_f32.to_radians()
-            );
+        // Check blocks just below the player's feet
+        let check_y = (feet_pos.y - 0.01).floor() as i32;
+        let min_x = (feet_pos.x - half_width).floor() as i32;
+        let max_x = (feet_pos.x + half_width).ceil() as i32;
+        let min_z = (feet_pos.z - half_width).floor() as i32;
+        let max_z = (feet_pos.z + half_width).ceil() as i32;
+
+        // Check all blocks under the player's base
+        for x in min_x..max_x {
+            for z in min_z..max_z {
+                let block = self.world.get_block(x, check_y, z);
+                if block != block::BlockType::air() {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Raycast to find which block the player is looking at
+    fn raycast_block(&self) -> Option<(i32, i32, i32, i32, i32, i32)> {
+        use glam::Vec3;
+
+        const MAX_DISTANCE: f32 = 5.0; // blocks
+        const STEP_SIZE: f32 = 0.1;
+
+        let start = self.camera.position;
+        let direction = self.camera.look_direction();
+
+        let mut pos = start;
+        let mut last_pos = start;
+
+        for _ in 0..(MAX_DISTANCE / STEP_SIZE) as i32 {
+            last_pos = pos;
+            pos += direction * STEP_SIZE;
+
+            let block_pos = (pos.x.floor() as i32, pos.y.floor() as i32, pos.z.floor() as i32);
+            let block = self.world.get_block(block_pos.0, block_pos.1, block_pos.2);
+
+            if block != block::BlockType::air() {
+                // Found a block - return hit position and face normal
+                let last_block_pos = (
+                    last_pos.x.floor() as i32,
+                    last_pos.y.floor() as i32,
+                    last_pos.z.floor() as i32,
+                );
+                return Some((
+                    block_pos.0, block_pos.1, block_pos.2,
+                    last_block_pos.0, last_block_pos.1, last_block_pos.2,
+                ));
+            }
         }
 
-        self.last_mouse_pos = Some(position);
+        None
+    }
+
+    /// Break the block the player is looking at
+    fn break_block(&mut self) {
+        if let Some((x, y, z, _, _, _)) = self.raycast_block() {
+            // Remove the block
+            self.world.set_block(x, y, z, block::BlockType::air());
+
+            // Regenerate affected chunk meshes
+            self.regenerate_chunk_at_position(x, z);
+        }
+    }
+
+    /// Place a block adjacent to the one the player is looking at
+    fn place_block(&mut self) {
+        if let Some((_, _, _, place_x, place_y, place_z)) = self.raycast_block() {
+            // Check we're not placing inside the player
+            let player_feet = self.camera.position - glam::Vec3::new(0.0, 1.62, 0.0);
+            let player_min_x = (player_feet.x - 0.3).floor() as i32;
+            let player_max_x = (player_feet.x + 0.3).ceil() as i32;
+            let player_min_y = player_feet.y.floor() as i32;
+            let player_max_y = (player_feet.y + 1.8).ceil() as i32;
+            let player_min_z = (player_feet.z - 0.3).floor() as i32;
+            let player_max_z = (player_feet.z + 0.3).ceil() as i32;
+
+            if place_x >= player_min_x && place_x <= player_max_x &&
+                place_y >= player_min_y && place_y <= player_max_y &&
+                place_z >= player_min_z && place_z <= player_max_z {
+                return; // Don't place block inside player
+            }
+
+            // Place dirt block (we can make this configurable later)
+            let dirt_block = self.world.registry.block_type("minecraft:dirt");
+            self.world.set_block(place_x, place_y, place_z, dirt_block);
+
+            // Regenerate affected chunk meshes
+            self.regenerate_chunk_at_position(place_x, place_z);
+        }
+    }
+
+    /// Regenerate the mesh for the chunk containing the given world position
+    fn regenerate_chunk_at_position(&mut self, world_x: i32, world_z: i32) {
+        let chunk_x = world_x.div_euclid(world::CHUNK_WIDTH as i32);
+        let chunk_z = world_z.div_euclid(world::CHUNK_WIDTH as i32);
+
+        if let Some(new_mesh_data) = self.world.regenerate_chunk_mesh(chunk_x, chunk_z) {
+            // Find and update the corresponding GPU mesh
+            if let Some(chunk_mesh) = self.chunk_meshes.iter_mut()
+                .find(|cm| cm.chunk_x == chunk_x && cm.chunk_z == chunk_z) {
+
+                // Recreate GPU buffers with new mesh data
+                chunk_mesh.opaque_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Chunk ({},{}) Opaque Vertex Buffer", chunk_x, chunk_z)),
+                    contents: bytemuck::cast_slice(&new_mesh_data.opaque_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+
+                chunk_mesh.opaque_index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Chunk ({},{}) Opaque Index Buffer", chunk_x, chunk_z)),
+                    contents: bytemuck::cast_slice(&new_mesh_data.opaque_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+
+                chunk_mesh.opaque_num_indices = new_mesh_data.opaque_indices.len() as u32;
+
+                chunk_mesh.transparent_vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Chunk ({},{}) Transparent Vertex Buffer", chunk_x, chunk_z)),
+                    contents: bytemuck::cast_slice(&new_mesh_data.transparent_vertices),
+                    usage: wgpu::BufferUsages::VERTEX,
+                });
+
+                chunk_mesh.transparent_index_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                    label: Some(&format!("Chunk ({},{}) Transparent Index Buffer", chunk_x, chunk_z)),
+                    contents: bytemuck::cast_slice(&new_mesh_data.transparent_indices),
+                    usage: wgpu::BufferUsages::INDEX,
+                });
+
+                chunk_mesh.transparent_num_indices = new_mesh_data.transparent_indices.len() as u32;
+            }
+        }
     }
 
     /// Render a frame
@@ -794,6 +1199,7 @@ fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[
 }
 
 /// Application state for winit event loop
+#[derive(PartialEq)]
 enum GameState {
     Menu,
     Playing,
@@ -984,9 +1390,6 @@ impl ApplicationHandler for App {
                             WindowEvent::Resized(physical_size) => {
                                 state.resize(physical_size);
                             }
-                            WindowEvent::CursorMoved { position, .. } => {
-                                state.mouse_moved((position.x, position.y));
-                            }
                             WindowEvent::RedrawRequested => {
                                 let now = std::time::Instant::now();
                                 let dt = (now - self.last_render_time).as_secs_f32();
@@ -1004,6 +1407,29 @@ impl ApplicationHandler for App {
                             _ => {}
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn device_event(&mut self, _event_loop: &ActiveEventLoop, _device_id: winit::event::DeviceId, event: winit::event::DeviceEvent) {
+        // Only process mouse motion when playing (not in menu)
+        if self.game_state == GameState::Playing {
+            if let Some(state) = &mut self.state {
+                match event {
+                    winit::event::DeviceEvent::MouseMotion { delta } => {
+                        // Use raw mouse delta for camera control (works even when cursor is locked)
+                        let sensitivity = 0.002;
+                        state.camera.yaw += delta.0 as f32 * sensitivity;
+                        state.camera.pitch -= delta.1 as f32 * sensitivity;
+
+                        // Clamp pitch to prevent flipping upside down
+                        state.camera.pitch = state.camera.pitch.clamp(
+                            -89.0_f32.to_radians(),
+                            89.0_f32.to_radians()
+                        );
+                    }
+                    _ => {}
                 }
             }
         }

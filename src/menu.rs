@@ -30,31 +30,31 @@ pub struct MainMenu {
 
 #[derive(Clone, Copy, Debug)]
 pub enum WorldSize {
+    Tiny,
     Small,
     Medium,
     Large,
     Enormous,
-    Overkill,
 }
 
 impl WorldSize {
     pub fn get_chunks(&self) -> i32 {
         match self {
-            WorldSize::Small => 8,
-            WorldSize::Medium => 16,
+            WorldSize::Tiny => 8,
+            WorldSize::Small => 16,
+            WorldSize::Medium => 24,
             WorldSize::Large => 32,
             WorldSize::Enormous => 64,
-            WorldSize::Overkill => 1024,
         }
     }
 
     pub fn from_index(index: usize) -> Self {
         match index {
-            0 => WorldSize::Small,
-            1 => WorldSize::Medium,
-            2 => WorldSize::Large,
-            3 => WorldSize::Enormous,
-            4 => WorldSize::Overkill,
+            0 => WorldSize::Tiny,
+            1 => WorldSize::Small,
+            2 => WorldSize::Medium,
+            3 => WorldSize::Large,
+            4 => WorldSize::Enormous,
             _ => WorldSize::Medium,
         }
     }
@@ -275,11 +275,11 @@ impl MainMenu {
 
         // Options
         let options = [
-            "Small (8x8)",
-            "Medium (16x16)",
+            "Tiny (8x8)",
+            "Small (16x16)",
+            "Medium (24x24)",
             "Large (32x32)",
             "Enormous (64x64)",
-            "Overkill (1024x1024)",
         ];
         for option in options {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
