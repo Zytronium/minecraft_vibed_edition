@@ -40,6 +40,19 @@ const BLOCKS_JSON: &str = include_str!("blocks.json");
 const ITEMS_JSON: &str = include_str!("items.json");
 const CRAFTING_JSON: &str = include_str!("crafting.json");
 
+/// GPU buffers for a single chunk's mesh data
+/// Storing meshes per-chunk avoids hitting GPU buffer size limits
+struct ChunkMesh {
+    opaque_vertex_buffer: wgpu::Buffer,
+    opaque_index_buffer: wgpu::Buffer,
+    opaque_num_indices: u32,
+    transparent_vertex_buffer: wgpu::Buffer,
+    transparent_index_buffer: wgpu::Buffer,
+    transparent_num_indices: u32,
+    chunk_x: i32,
+    chunk_z: i32,
+}
+
 /// Main rendering state - holds all GPU resources and game state
 struct State {
     surface: wgpu::Surface<'static>,
@@ -49,12 +62,7 @@ struct State {
     size: winit::dpi::PhysicalSize<u32>,
     render_pipeline_opaque: wgpu::RenderPipeline,
     render_pipeline_transparent: wgpu::RenderPipeline,
-    opaque_vertex_buffer: wgpu::Buffer,
-    opaque_index_buffer: wgpu::Buffer,
-    opaque_num_indices: u32,
-    transparent_vertex_buffer: wgpu::Buffer,
-    transparent_index_buffer: wgpu::Buffer,
-    transparent_num_indices: u32,
+    chunk_meshes: Vec<ChunkMesh>,  // Separate buffers for each chunk
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
@@ -63,8 +71,6 @@ struct State {
     mouse_pressed: bool,
     last_mouse_pos: Option<(f64, f64)>,
     window: Arc<Window>,
-    block_registry: Arc<block::BlockRegistry>,
-    texture_map: std::collections::HashMap<String, u32>,
 }
 
 impl State {
@@ -321,7 +327,7 @@ impl State {
 
         // Generate world with loading screen - NON-BLOCKING
         println!("Generating world...");
-        let (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices) = {
+        let chunk_meshes = {
             // Create loading screen
             let mut loading_screen = LoadingScreen::new(&device, &queue, config.format);
 
@@ -378,7 +384,7 @@ impl State {
                 }
 
                 // Check if generation is complete
-                if let Ok(result) = done_rx.try_recv() {
+                if let Ok(chunk_mesh_data) = done_rx.try_recv() {
                     // Render final loading screen at 100%
                     let total_chunks = (world_size_chunks * world_size_chunks) as usize;
                     num_indices = loading_screen.update_progress(&queue, 1.0, total_chunks, total_chunks);
@@ -389,7 +395,7 @@ impl State {
                     }
                     // Small delay so user can see 100%
                     std::thread::sleep(std::time::Duration::from_millis(200));
-                    break result;
+                    break chunk_mesh_data;
                 }
 
                 // Small sleep to prevent busy-waiting
@@ -397,34 +403,56 @@ impl State {
             }
         };
 
-        println!("Generated {} opaque vertices, {} transparent vertices",
-                 all_opaque_vertices.len(), all_transparent_vertices.len());
+        // Convert per-chunk mesh data into GPU buffers
+        // IMPORTANT: Each chunk gets its own set of buffers to avoid hitting GPU limits
+        let mut gpu_chunk_meshes = Vec::new();
+        let mut total_opaque_verts = 0;
+        let mut total_transparent_verts = 0;
 
-        // Upload opaque mesh to GPU
-        let opaque_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Opaque Vertex Buffer"),
-            contents: bytemuck::cast_slice(&all_opaque_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        for chunk_data in chunk_meshes {
+            total_opaque_verts += chunk_data.opaque_vertices.len();
+            total_transparent_verts += chunk_data.transparent_vertices.len();
 
-        let opaque_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Opaque Index Buffer"),
-            contents: bytemuck::cast_slice(&all_opaque_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+            // Create GPU buffers for this chunk's opaque geometry
+            let opaque_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk ({},{}) Opaque Vertex Buffer", chunk_data.chunk_x, chunk_data.chunk_z)),
+                contents: bytemuck::cast_slice(&chunk_data.opaque_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
 
-        // Upload transparent mesh to GPU
-        let transparent_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Transparent Vertex Buffer"),
-            contents: bytemuck::cast_slice(&all_transparent_vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+            let opaque_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk ({},{}) Opaque Index Buffer", chunk_data.chunk_x, chunk_data.chunk_z)),
+                contents: bytemuck::cast_slice(&chunk_data.opaque_indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
 
-        let transparent_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Transparent Index Buffer"),
-            contents: bytemuck::cast_slice(&all_transparent_indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
+            // Create GPU buffers for this chunk's transparent geometry
+            let transparent_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk ({},{}) Transparent Vertex Buffer", chunk_data.chunk_x, chunk_data.chunk_z)),
+                contents: bytemuck::cast_slice(&chunk_data.transparent_vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+
+            let transparent_index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some(&format!("Chunk ({},{}) Transparent Index Buffer", chunk_data.chunk_x, chunk_data.chunk_z)),
+                contents: bytemuck::cast_slice(&chunk_data.transparent_indices),
+                usage: wgpu::BufferUsages::INDEX,
+            });
+
+            gpu_chunk_meshes.push(ChunkMesh {
+                opaque_vertex_buffer,
+                opaque_index_buffer,
+                opaque_num_indices: chunk_data.opaque_indices.len() as u32,
+                transparent_vertex_buffer,
+                transparent_index_buffer,
+                transparent_num_indices: chunk_data.transparent_indices.len() as u32,
+                chunk_x: chunk_data.chunk_x,
+                chunk_z: chunk_data.chunk_z,
+            });
+        }
+
+        println!("Generated {} chunks with {} opaque vertices, {} transparent vertices",
+                 gpu_chunk_meshes.len(), total_opaque_verts, total_transparent_verts);
 
         Self {
             surface,
@@ -434,12 +462,7 @@ impl State {
             size,
             render_pipeline_opaque,
             render_pipeline_transparent,
-            opaque_vertex_buffer,
-            opaque_index_buffer,
-            opaque_num_indices: all_opaque_indices.len() as u32,
-            transparent_vertex_buffer,
-            transparent_index_buffer,
-            transparent_num_indices: all_transparent_indices.len() as u32,
+            chunk_meshes: gpu_chunk_meshes,
             camera,
             camera_buffer,
             camera_bind_group,
@@ -448,8 +471,6 @@ impl State {
             mouse_pressed: false,
             last_mouse_pos: None,
             window,
-            block_registry,
-            texture_map,
         }
     }
 
@@ -618,19 +639,31 @@ impl State {
                 occlusion_query_set: None,
             });
 
-            // Draw opaque geometry first (with depth writes)
-            render_pass.set_pipeline(&self.render_pipeline_opaque);
+            // Set up common state for all chunks
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.opaque_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.opaque_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.opaque_num_indices, 0, 0..1);
 
-            // Draw transparent geometry second (without depth writes, with blending)
+            // FIRST PASS: Render all opaque geometry from all chunks
+            // This must be done first with depth writes enabled
+            render_pass.set_pipeline(&self.render_pipeline_opaque);
+            for chunk_mesh in &self.chunk_meshes {
+                if chunk_mesh.opaque_num_indices > 0 {
+                    render_pass.set_vertex_buffer(0, chunk_mesh.opaque_vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(chunk_mesh.opaque_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..chunk_mesh.opaque_num_indices, 0, 0..1);
+                }
+            }
+
+            // SECOND PASS: Render all transparent geometry from all chunks
+            // This must be done second without depth writes but with depth testing
             render_pass.set_pipeline(&self.render_pipeline_transparent);
-            render_pass.set_vertex_buffer(0, self.transparent_vertex_buffer.slice(..));
-            render_pass.set_index_buffer(self.transparent_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-            render_pass.draw_indexed(0..self.transparent_num_indices, 0, 0..1);
+            for chunk_mesh in &self.chunk_meshes {
+                if chunk_mesh.transparent_num_indices > 0 {
+                    render_pass.set_vertex_buffer(0, chunk_mesh.transparent_vertex_buffer.slice(..));
+                    render_pass.set_index_buffer(chunk_mesh.transparent_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                    render_pass.draw_indexed(0..chunk_mesh.transparent_num_indices, 0, 0..1);
+                }
+            }
         }
 
         // Submit commands and present frame
@@ -708,11 +741,11 @@ fn load_textures_from_map(
             let texture_name = name_opt.expect("Missing texture for index");
             if let Some(bytes) = embedded_textures.get(texture_name) {
                 load_texture_from_bytes(device, queue, bytes, texture_name)
-        } else {
+            } else {
                 eprintln!("Warning: Texture '{}' not found in embedded assets, using not_found.png", texture_name);
                 // Use not_found.png as fallback for missing textures
                 load_texture_from_bytes(device, queue, NOT_FOUND, "not_found")
-        }
+            }
         })
         .collect()
 }

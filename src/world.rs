@@ -22,6 +22,17 @@ pub struct World {
     registry: Arc<BlockRegistry>,
 }
 
+/// Per-chunk mesh data to avoid creating massive monolithic buffers
+#[derive(Debug)]
+pub struct ChunkMeshData {
+    pub opaque_vertices: Vec<Vertex>,
+    pub opaque_indices: Vec<u32>,
+    pub transparent_vertices: Vec<Vertex>,
+    pub transparent_indices: Vec<u32>,
+    pub chunk_x: i32,
+    pub chunk_z: i32,
+}
+
 /// Smooth interpolation function (smoothstep) for blending values
 /// Returns 0 when x <= edge0, 1 when x >= edge1, smooth curve in between
 fn smoothstep(edge0: f64, edge1: f64, x: f64) -> f64 {
@@ -73,13 +84,13 @@ impl World {
     }
 
     /// Generate entire world with terrain and trees
-    /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
+    /// Returns a Vec of per-chunk mesh data instead of combining everything
     /// progress_callback is called with (current_chunk, total_chunks) for progress updates
     pub fn generate<F>(
         world_size_chunks: i32,
         registry: Arc<BlockRegistry>,
         mut progress_callback: F
-    ) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>)
+    ) -> Vec<ChunkMeshData>
     where
         F: FnMut(usize, usize),
     {
@@ -158,29 +169,28 @@ impl World {
             }
         }
 
-        // Third pass: Generate meshes with cross-chunk data
-        let mut all_opaque_vertices = Vec::new();
-        let mut all_opaque_indices = Vec::new();
-        let mut all_transparent_vertices = Vec::new();
-        let mut all_transparent_indices = Vec::new();
+        // Third pass: Generate per-chunk meshes with cross-chunk data
+        // IMPORTANT: We now return separate mesh data for each chunk instead of combining
+        let mut chunk_meshes = Vec::new();
 
         for chunk_x in 0..world_size_chunks {
             for chunk_z in 0..world_size_chunks {
                 if let Some(chunk) = world.chunks.get(&(chunk_x, chunk_z)) {
                     let (opaque_verts, opaque_idx, trans_verts, trans_idx) = chunk.generate_mesh(&world);
 
-                    let opaque_offset = all_opaque_vertices.len() as u32;
-                    all_opaque_vertices.extend(opaque_verts);
-                    all_opaque_indices.extend(opaque_idx.iter().map(|&i| i + opaque_offset));
-
-                    let trans_offset = all_transparent_vertices.len() as u32;
-                    all_transparent_vertices.extend(trans_verts);
-                    all_transparent_indices.extend(trans_idx.iter().map(|&i| i + trans_offset));
+                    chunk_meshes.push(ChunkMeshData {
+                        opaque_vertices: opaque_verts,
+                        opaque_indices: opaque_idx,
+                        transparent_vertices: trans_verts,
+                        transparent_indices: trans_idx,
+                        chunk_x,
+                        chunk_z,
+                    });
                 }
             }
         }
 
-        (all_opaque_vertices, all_opaque_indices, all_transparent_vertices, all_transparent_indices)
+        chunk_meshes
     }
 }
 
