@@ -6,17 +6,19 @@ use glyphon::{
 const FONT: &[u8] = include_bytes!("../assets/fonts/font.ttf");
 const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
 const BUTTON_TEXTURE: &[u8] = include_bytes!("../assets/textures/ui/button2.png");
+const WALLPAPER: &[u8] = include_bytes!("../assets/wallpaper.png");
 
 pub struct MainMenu {
     pipeline: wgpu::RenderPipeline,
-    dirt_bind_group: wgpu::BindGroup,
+    wallpaper_bind_group: wgpu::BindGroup,
     button_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
-    selected_option: usize,
     hovered_option: Option<usize>,
     window_width: u32,
     window_height: u32,
+    wallpaper_width: u32,
+    wallpaper_height: u32,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -102,13 +104,26 @@ struct ButtonBounds {
 
 impl MainMenu {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
-        let dirt_texture = load_texture_from_bytes(device, queue, DIRT_TEXTURE, "menu_dirt");
-        let dirt_view = dirt_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Load wallpaper texture for background and get its dimensions
+        let (wallpaper_texture, wallpaper_width, wallpaper_height) = load_texture_from_bytes_with_size(device, queue, WALLPAPER, "menu_wallpaper");
+        let wallpaper_view = wallpaper_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         let button_texture = load_texture_from_bytes(device, queue, BUTTON_TEXTURE, "menu_button");
         let button_view = button_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        // Sampler for wallpaper - ClampToEdge to prevent repeating
+        let wallpaper_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,  // Use linear for smoother wallpaper
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        // Sampler for buttons - Nearest for pixelated look
+        let button_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::Repeat,
@@ -140,19 +155,19 @@ impl MainMenu {
             label: Some("menu_texture_bind_group_layout"),
         });
 
-        let dirt_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let wallpaper_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             layout: &texture_bind_group_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&dirt_view),
+                    resource: wgpu::BindingResource::TextureView(&wallpaper_view),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&wallpaper_sampler),
                 },
             ],
-            label: Some("menu_dirt_bind_group"),
+            label: Some("menu_wallpaper_bind_group"),
         });
 
         let button_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -164,7 +179,7 @@ impl MainMenu {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&button_sampler),
                 },
             ],
             label: Some("menu_button_bind_group"),
@@ -276,19 +291,20 @@ impl MainMenu {
         // Instructions
         let mut buffer = Buffer::new(&mut font_system, Metrics::new(25.0, 35.0));
         buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Click to select, or use arrow keys and ENTER", font_attrs, Shaping::Advanced);
+        buffer.set_text(&mut font_system, "Click to select a world size", font_attrs, Shaping::Advanced);
         buffers.push(buffer);
 
         Self {
             pipeline,
-            dirt_bind_group,
+            wallpaper_bind_group,
             button_bind_group,
             vertex_buffer,
             index_buffer,
-            selected_option: 1,
             hovered_option: None,
             window_width: width,
             window_height: height,
+            wallpaper_width,
+            wallpaper_height,
             font_system,
             swash_cache,
             atlas,
@@ -331,35 +347,19 @@ impl MainMenu {
     }
 
     /// Handle mouse click with proper coordinate handling
-    pub fn handle_click(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
+    /// Returns the selected world size if a button was clicked
+    pub fn handle_click(&mut self, mouse_x: f64, mouse_y: f64) -> Option<WorldSize> {
         let mx = mouse_x as f32;
         let my = mouse_y as f32;
 
         for i in 0..5 {
             let bounds = self.get_button_bounds(i);
             if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
-                self.selected_option = i;
-                return true;
+                return Some(WorldSize::from_index(i));
             }
         }
 
-        false
-    }
-
-    pub fn move_selection_up(&mut self) {
-        if self.selected_option > 0 {
-            self.selected_option -= 1;
-        }
-    }
-
-    pub fn move_selection_down(&mut self) {
-        if self.selected_option < 4 {
-            self.selected_option += 1;
-        }
-    }
-
-    pub fn get_selected_size(&self) -> WorldSize {
-        WorldSize::from_index(self.selected_option)
+        None
     }
 
     /// Update window dimensions on resize
@@ -377,17 +377,42 @@ impl MainMenu {
         }
     }
 
+    /// Calculate texture coordinates for crop-to-fit behavior (like CSS object-fit: cover)
+    fn calculate_crop_coords(&self) -> (f32, f32, f32, f32) {
+        let window_aspect = self.window_width as f32 / self.window_height as f32;
+        let image_aspect = self.wallpaper_width as f32 / self.wallpaper_height as f32;
+
+        if window_aspect > image_aspect {
+            // Window is wider - crop top and bottom of image
+            let v_range = image_aspect / window_aspect;
+            let v_min = (1.0 - v_range) / 2.0;
+            let v_max = (1.0 + v_range) / 2.0;
+            (0.0, v_min, 1.0, v_max)
+        } else {
+            // Window is taller - crop left and right of image
+            let u_range = window_aspect / image_aspect;
+            let u_min = (1.0 - u_range) / 2.0;
+            let u_max = (1.0 + u_range) / 2.0;
+            (u_min, 0.0, u_max, 1.0)
+        }
+    }
+
     /// Generate background geometry - returns number of indices
     pub fn update_geometry(&mut self, queue: &wgpu::Queue) -> usize {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        // Background (tiled dirt texture)
+        // Calculate crop-to-fit texture coordinates
+        let (u_min, v_min, u_max, v_max) = self.calculate_crop_coords();
+
+        // Background (single wallpaper image cropped to fit with dark overlay)
+        // Use calculated texture coordinates to crop the image while maintaining aspect ratio
+        // Use dark color multiplier [0.4, 0.4, 0.4, 1.0] to darken the wallpaper
         let bg_verts = [
-            MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [ 1.0, -1.0], tex_coords: [8.0, 8.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [ 1.0,  1.0], tex_coords: [8.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
-            MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [1.0, 1.0, 1.0, 1.0] },
+            MenuVertex { position: [-1.0, -1.0], tex_coords: [u_min, v_max], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [ 1.0, -1.0], tex_coords: [u_max, v_max], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [ 1.0,  1.0], tex_coords: [u_max, v_min], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [-1.0,  1.0], tex_coords: [u_min, v_min], color: [0.4, 0.4, 0.4, 1.0] },
         ];
         vertices.extend_from_slice(&bg_verts);
         indices.extend_from_slice(&[0u32, 1, 2, 2, 3, 0]);
@@ -410,11 +435,9 @@ impl MainMenu {
         for i in 0..5 {
             let bounds = self.get_button_bounds(i);
 
-            // Determine button color/tint based on state
+            // Only highlight if mouse is hovering over this button
             let color = if Some(i) == self.hovered_option {
                 [1.2, 1.2, 1.2, 1.0] // Brighter when hovering
-            } else if i == self.selected_option {
-                [1.1, 1.1, 1.1, 1.0] // Slightly brighter when selected
             } else {
                 [1.0, 1.0, 1.0, 1.0] // Normal
             };
@@ -477,8 +500,8 @@ impl MainMenu {
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
 
-            // Draw background with dirt texture
-            render_pass.set_bind_group(0, &self.dirt_bind_group, &[]);
+            // Draw background with wallpaper texture (cropped and darkened)
+            render_pass.set_bind_group(0, &self.wallpaper_bind_group, &[]);
             render_pass.draw_indexed(0..bg_indices as u32, 0, 0..1);
 
             // Draw buttons with button texture
@@ -515,9 +538,9 @@ impl MainMenu {
         // Options - centered in buttons
         for i in 0..5 {
             let y = (300.0 + i as f32 * 60.0) * scale_y + 8.0 * scale_y; // Offset for vertical centering
-            // Highlight if hovered or selected
-            let color = if Some(i) == self.hovered_option || i == self.selected_option {
-                GlyphonColor::rgb(255, 255, 0) // Yellow for hover or selected
+            // Only highlight if mouse is hovering over this button
+            let color = if Some(i) == self.hovered_option {
+                GlyphonColor::rgb(255, 255, 0) // Yellow when hovering
             } else {
                 GlyphonColor::rgb(230, 230, 230) // White for normal
             };
@@ -536,7 +559,7 @@ impl MainMenu {
         // Instructions
         text_areas.push(TextArea {
             buffer: &self.buffers[7],
-            left: 320.0 * scale_x,
+            left: 335.0 * scale_x,
             top: 650.0 * scale_y,
             scale: 1.0,
             bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
@@ -620,4 +643,47 @@ fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[
     );
 
     texture
+}
+
+/// Load texture and return the texture along with its dimensions
+fn load_texture_from_bytes_with_size(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> (wgpu::Texture, u32, u32) {
+    let img = image::load_from_memory(bytes)
+        .unwrap_or_else(|e| panic!("Failed to load texture {}: {}", label, e))
+        .to_rgba8();
+    let dimensions = img.dimensions();
+
+    let size = wgpu::Extent3d {
+        width: dimensions.0,
+        height: dimensions.1,
+        depth_or_array_layers: 1,
+    };
+
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    queue.write_texture(
+        wgpu::ImageCopyTexture {
+            texture: &texture,
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        &img,
+        wgpu::ImageDataLayout {
+            offset: 0,
+            bytes_per_row: Some(4 * dimensions.0),
+            rows_per_image: Some(dimensions.1),
+        },
+        size,
+    );
+
+    (texture, dimensions.0, dimensions.1)
 }

@@ -943,11 +943,10 @@ impl ApplicationHandler for App {
                         if let Some(menu) = &mut self.menu {
                             // Use the last known mouse position for click handling
                             if let Some((x, y)) = self.last_mouse_pos {
-                                if menu.handle_click(x, y) {
-                                    println!("Starting world generation: {:?} chunks", menu.get_selected_size().get_chunks());
+                                if let Some(selected_size) = menu.handle_click(x, y) {
+                                    println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
 
                                     if let Some(ctx) = self.menu_ctx.take() {
-                                        let selected_size = menu.get_selected_size();
                                         self.state = Some(pollster::block_on(State::new(
                                             ctx.window,
                                             selected_size,
@@ -970,39 +969,6 @@ impl ApplicationHandler for App {
                         ..
                     } => {
                         match key {
-                            KeyCode::ArrowUp => {
-                                if let Some(menu) = &mut self.menu {
-                                    menu.move_selection_up();
-                                    if let Some(ctx) = &self.menu_ctx {
-                                        ctx.window.request_redraw();
-                                    }
-                                }
-                            }
-                            KeyCode::ArrowDown => {
-                                if let Some(menu) = &mut self.menu {
-                                    menu.move_selection_down();
-                                    if let Some(ctx) = &self.menu_ctx {
-                                        ctx.window.request_redraw();
-                                    }
-                                }
-                            }
-                            KeyCode::Enter => {
-                                if let Some(menu) = &self.menu {
-                                    let selected_size = menu.get_selected_size();
-                                    println!("Starting world generation: {:?} chunks", selected_size.get_chunks());
-
-                                    if let Some(ctx) = self.menu_ctx.take() {
-                                        self.state = Some(pollster::block_on(State::new(
-                                            ctx.window,
-                                            selected_size,
-                                            ctx.instance,
-                                            ctx.surface
-                                        )));
-                                        self.menu = None;
-                                        self.game_state = GameState::Playing;
-                                    }
-                                }
-                            }
                             KeyCode::Escape => event_loop.exit(),
                             _ => {}
                         }
