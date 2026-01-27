@@ -5,6 +5,7 @@ mod world;
 mod loading;
 mod menu;
 mod models;
+mod ui;
 
 use winit::{
     event::*,
@@ -55,11 +56,16 @@ const GRASS_BOTTOM: &[u8] = include_bytes!("../assets/textures/grass_bottom.png"
 const GRASS_SIDE: &[u8] = include_bytes!("../assets/textures/grass_side.png");
 const DIRT: &[u8] = include_bytes!("../assets/textures/dirt.png");
 const STONE: &[u8] = include_bytes!("../assets/textures/stone.png");
+// const COBBLESTONE: &[u8] = include_bytes!("../assets/textures/cobblestone.png");
+const BEDROCK: &[u8] = include_bytes!("../assets/textures/bedrock.png");
 const LOG_TOP_BOTTOM: &[u8] = include_bytes!("../assets/textures/log_top-bottom.png");
 const LOG_SIDE: &[u8] = include_bytes!("../assets/textures/log_side.png");
 const LEAVES: &[u8] = include_bytes!("../assets/textures/leaves.png");
-const BEDROCK: &[u8] = include_bytes!("../assets/textures/bedrock.png");
+const GLASS: &[u8] = include_bytes!("../assets/textures/glass.png");
+const PLANKS: &[u8] = include_bytes!("../assets/textures/planks.png");
 const NOT_FOUND: &[u8] = include_bytes!("../assets/textures/not_found.png");
+const HOTBAR_SLOT: &[u8] = include_bytes!("../assets/textures/ui/hotbar_slot.png");
+const HOTBAR_SLOT_SELECTED: &[u8] = include_bytes!("../assets/textures/ui/hotbar_slot_selected.png");
 
 // Embed JSON data files at compile time
 const BLOCKS_JSON: &str = include_str!("blocks.json");
@@ -98,6 +104,9 @@ struct State {
     window: Arc<Window>,
     game_mode: GameMode,
     player_state: PlayerState,
+    ui_renderer: ui::UIRenderer,
+    hotbar: ui::Hotbar,
+    texture_map: std::collections::HashMap<String, u32>,
 }
 
 impl State {
@@ -246,6 +255,10 @@ impl State {
             }],
             label: Some("camera_bind_group_layout"),
         });
+
+        // Store references for UI renderer
+        let texture_map_clone = texture_map.clone();
+        let texture_views_refs: Vec<_> = texture_views.iter().collect();
 
         // Bind camera buffer to the layout
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -525,6 +538,21 @@ impl State {
         player_state.physics_enabled = true; // Enable physics now that world is ready
         player_state.on_ground = true; // Start on ground to prevent immediate falling
 
+        let hotbar = ui::Hotbar::new(&block_registry);
+
+        // Initialize UI renderer
+        let ui_renderer = ui::UIRenderer::new(
+            &device,
+            &queue,
+            config.format,
+            size.width,
+            size.height,
+            HOTBAR_SLOT,
+            HOTBAR_SLOT_SELECTED,
+            &texture_map_clone,
+            &texture_views_refs,
+        );
+
         Self {
             surface,
             device,
@@ -543,6 +571,9 @@ impl State {
             window,
             game_mode: GameMode::Creative,
             player_state,
+            ui_renderer,
+            hotbar,
+            texture_map,
         }
     }
 
@@ -554,6 +585,7 @@ impl State {
             self.config.height = new_size.height;
             self.surface.configure(&self.device, &self.config);
             self.camera.aspect = new_size.width as f32 / new_size.height as f32;
+            self.ui_renderer.resize(new_size.width, new_size.height);
         }
     }
 
@@ -598,6 +630,13 @@ impl State {
                         println!("Cursor released - press any movement key to recapture");
                     }
 
+                    // Number keys 1-9 to select hotbar slots
+                    if *key >= KeyCode::Digit1 && *key <= KeyCode::Digit9 {
+                        let slot = (*key as u32 - KeyCode::Digit1 as u32) as usize;
+                        self.hotbar.select_slot(slot);
+                        println!("Selected slot {} - {:?}", slot + 1, self.hotbar.get_selected_block());
+                    }
+
                     // Recapture cursor when any movement key is pressed
                     if matches!(key, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD | KeyCode::Space | KeyCode::ShiftLeft) {
                         let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
@@ -606,6 +645,24 @@ impl State {
                     }
                 } else {
                     self.keys_pressed.remove(key);
+                }
+                true
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // Handle scroll wheel for hotbar selection
+                let scroll_amount = match delta {
+                    winit::event::MouseScrollDelta::LineDelta(_, y) => {
+                        if *y > 0.0 { -1 } else if *y < 0.0 { 1 } else { 0 }
+                    }
+                    winit::event::MouseScrollDelta::PixelDelta(pos) => {
+                        if pos.y > 0.0 { -1 } else if pos.y < 0.0 { 1 } else { 0 }
+                    }
+                };
+                if scroll_amount != 0 {
+                    self.hotbar.scroll(scroll_amount);
+                    println!("Selected slot {} - {:?}",
+                             self.hotbar.selected_slot + 1,
+                             self.hotbar.get_selected_block());
                 }
                 true
             }
@@ -939,9 +996,10 @@ impl State {
                 return; // Don't place block inside player
             }
 
-            // Place dirt block (we can make this configurable later)
-            let dirt_block = self.world.registry.block_type("minecraft:dirt");
-            self.world.set_block(place_x, place_y, place_z, dirt_block);
+            // Place the selected block from hotbar
+            let selected_block = self.hotbar.get_selected_block();
+            self.world.set_block(place_x, place_y, place_z, selected_block);
+            println!("Placed {:?} at ({}, {}, {})", selected_block, place_x, place_y, place_z);
 
             // Regenerate affected chunk meshes
             self.regenerate_chunk_at_position(place_x, place_z);
@@ -1013,15 +1071,22 @@ impl State {
         });
         let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Update UI geometry before rendering
+        self.ui_renderer.update_geometry(
+            &self.queue,
+            &self.hotbar,
+            &self.texture_map,
+        );
+
         // Create command encoder to record rendering commands
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("Render Encoder"),
         });
 
+        // FIRST RENDER PASS: 3D world with depth
         {
-            // Begin render pass
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
+                label: Some("3D Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &view,
                     resolve_target: None,
@@ -1048,8 +1113,7 @@ impl State {
             render_pass.set_bind_group(0, &self.camera_bind_group, &[]);
             render_pass.set_bind_group(1, &self.texture_bind_group, &[]);
 
-            // FIRST PASS: Render all opaque geometry from all chunks
-            // This must be done first with depth writes enabled
+            // Render all opaque geometry from all chunks
             render_pass.set_pipeline(&self.render_pipeline_opaque);
             for chunk_mesh in &self.chunk_meshes {
                 if chunk_mesh.opaque_num_indices > 0 {
@@ -1059,8 +1123,7 @@ impl State {
                 }
             }
 
-            // SECOND PASS: Render all transparent geometry from all chunks
-            // This must be done second without depth writes but with depth testing
+            // Render all transparent geometry from all chunks
             render_pass.set_pipeline(&self.render_pipeline_transparent);
             for chunk_mesh in &self.chunk_meshes {
                 if chunk_mesh.transparent_num_indices > 0 {
@@ -1069,6 +1132,26 @@ impl State {
                     render_pass.draw_indexed(0..chunk_mesh.transparent_num_indices, 0, 0..1);
                 }
             }
+        }
+
+        // SECOND RENDER PASS: 2D UI overlay without depth
+        {
+            let mut ui_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("UI Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,  // Load existing content from 3D pass
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,  // No depth for UI
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.ui_renderer.render(&mut ui_render_pass);
         }
 
         // Submit commands and present frame
@@ -1132,6 +1215,8 @@ fn load_textures_from_map(
         ("log_top-bottom", LOG_TOP_BOTTOM),
         ("log_side", LOG_SIDE),
         ("leaves", LEAVES),
+        ("glass", GLASS),
+        ("planks", PLANKS),
     ].iter().cloned().collect();
 
     // Build a reverse map: index -> texture_name (Option<&str> is Clone because &str is Copy)
