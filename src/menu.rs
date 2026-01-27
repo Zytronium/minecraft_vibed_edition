@@ -4,7 +4,6 @@ use glyphon::{
 };
 
 const FONT: &[u8] = include_bytes!("../assets/fonts/font.ttf");
-const DIRT_TEXTURE: &[u8] = include_bytes!("../assets/textures/dirt.png");
 const BUTTON_TEXTURE: &[u8] = include_bytes!("../assets/textures/ui/button2.png");
 const WALLPAPER: &[u8] = include_bytes!("../assets/wallpaper.png");
 

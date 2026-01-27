@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use camera::Camera;
 use vertex::Vertex;
-use world::{World, ChunkMeshData};
+use world::World;
 use loading::LoadingScreen;
 use menu::{MainMenu, WorldSize, PauseMenu, PauseAction};
 use std::sync::mpsc;
@@ -918,8 +918,6 @@ impl State {
 
     /// Raycast to find which block the player is looking at
     fn raycast_block(&self) -> Option<(i32, i32, i32, i32, i32, i32)> {
-        use glam::Vec3;
-
         const MAX_DISTANCE: f32 = 5.0; // blocks
         const STEP_SIZE: f32 = 0.1;
 
@@ -927,7 +925,7 @@ impl State {
         let direction = self.camera.look_direction();
 
         let mut pos = start;
-        let mut last_pos = start;
+        let mut last_pos;
 
         for _ in 0..(MAX_DISTANCE / STEP_SIZE) as i32 {
             last_pos = pos;
@@ -1465,6 +1463,9 @@ impl ApplicationHandler for App {
                     return;
                 }
 
+                // Track if we need to exit due to OOM (checked after borrow ends)
+                let mut should_exit_oom = false;
+
                 if let Some(state) = &mut self.state {
                     // Check for ESC key to pause BEFORE passing to state.input()
                     if let WindowEvent::KeyboardInput {
@@ -1515,20 +1516,26 @@ impl ApplicationHandler for App {
                                     Ok(_) => {}
                                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                                     Err(wgpu::SurfaceError::OutOfMemory) => {
-                                        // Drop the borrow before cleaning up
-                                        drop(state);
-                                        self.state = None;
-                                        self.pause_menu = None;
-                                        event_loop.exit();
-                                        return;
+                                        // Will handle after borrow ends
+                                        should_exit_oom = true;
                                     }
                                     Err(e) => eprintln!("{:?}", e),
                                 }
-                                state.window.request_redraw();
+
+                                if !should_exit_oom {
+                                    state.window.request_redraw();
+                                }
                             }
                             _ => {}
                         }
                     }
+                }
+                // Borrow has ended naturally here
+
+                if should_exit_oom {
+                    self.state = None;
+                    self.pause_menu = None;
+                    event_loop.exit();
                 }
             }
             GameState::Paused => {
@@ -1539,6 +1546,9 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
+
+                // Track if we need to exit due to OOM (checked after borrow ends)
+                let mut should_exit_oom = false;
 
                 if let Some(state) = &mut self.state {
                     match event {
@@ -1657,16 +1667,15 @@ impl ApplicationHandler for App {
                                 }
                                 Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
                                 Err(wgpu::SurfaceError::OutOfMemory) => {
-                                    // Drop the borrow before cleaning up
-                                    drop(state);
-                                    self.state = None;
-                                    self.pause_menu = None;
-                                    event_loop.exit();
-                                    return;
+                                    // Will handle after borrow ends
+                                    should_exit_oom = true;
                                 }
                                 Err(e) => eprintln!("{:?}", e),
                             }
-                            state.window.request_redraw();
+
+                            if !should_exit_oom {
+                                state.window.request_redraw();
+                            }
                         }
                         WindowEvent::CursorMoved { position, .. } => {
                             self.last_mouse_pos = Some((position.x, position.y));
@@ -1807,6 +1816,13 @@ impl ApplicationHandler for App {
                         }
                         _ => {}
                     }
+                }
+                // Borrow has ended naturally here
+
+                if should_exit_oom {
+                    self.state = None;
+                    self.pause_menu = None;
+                    event_loop.exit();
                 }
             }
         }

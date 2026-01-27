@@ -1,5 +1,4 @@
 /// UI rendering system for crosshair and hotbar
-use wgpu::util::DeviceExt;
 use crate::block;
 
 /// Simple 2D vertex for UI elements (screen space coordinates)
@@ -123,7 +122,7 @@ impl UIRenderer {
         screen_height: u32,
         hotbar_slot_texture: &[u8],
         hotbar_slot_selected_texture: &[u8],
-        block_textures: &std::collections::HashMap<String, u32>,
+        _block_textures: &std::collections::HashMap<String, u32>,
         block_texture_views: &[&wgpu::TextureView],
     ) -> Self {
         // Load UI textures
@@ -426,7 +425,7 @@ impl UIRenderer {
         let mut indices = Vec::new();
 
         // Add crosshair (inverted colors, maintains 1:1 aspect ratio)
-        let aspect = self.screen_width as f32 / self.screen_height as f32;
+        let _aspect = self.screen_width as f32 / self.screen_height as f32;
         let crosshair_size_pixels = 8.0;  // Size in pixels
         let crosshair_thickness_pixels = 2.0;
 

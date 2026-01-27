@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use noise::{NoiseFn, Perlin};
-use rand::Rng;
 use crate::block::{BlockType, BlockRegistry};
 use crate::vertex::{Vertex, get_face_vertices};
 

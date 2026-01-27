@@ -1352,7 +1352,7 @@ dependencies = [
 
 [[package]]
 name = "minecraft_vibed_edition"
-version = "0.0.2"
+version = "0.0.3"
 dependencies = [
  "bytemuck",
  "env_logger",
