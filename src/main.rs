@@ -56,7 +56,7 @@ const GRASS_BOTTOM: &[u8] = include_bytes!("../assets/textures/grass_bottom.png"
 const GRASS_SIDE: &[u8] = include_bytes!("../assets/textures/grass_side.png");
 const DIRT: &[u8] = include_bytes!("../assets/textures/dirt.png");
 const STONE: &[u8] = include_bytes!("../assets/textures/stone.png");
-// const COBBLESTONE: &[u8] = include_bytes!("../assets/textures/cobblestone.png");
+const COBBLESTONE: &[u8] = include_bytes!("../assets/textures/cobblestone.png");
 const BEDROCK: &[u8] = include_bytes!("../assets/textures/bedrock.png");
 const LOG_TOP_BOTTOM: &[u8] = include_bytes!("../assets/textures/log_top-bottom.png");
 const LOG_SIDE: &[u8] = include_bytes!("../assets/textures/log_side.png");
@@ -1211,6 +1211,7 @@ fn load_textures_from_map(
         ("grass_side", GRASS_SIDE),
         ("dirt", DIRT),
         ("stone", STONE),
+        ("cobblestone", COBBLESTONE),
         ("bedrock", BEDROCK),
         ("log_top-bottom", LOG_TOP_BOTTOM),
         ("log_side", LOG_SIDE),
