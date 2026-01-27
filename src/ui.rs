@@ -100,12 +100,16 @@ pub struct UIRenderer {
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     num_indices: u32,
+    crosshair_num_indices: u32,  // Separate count for crosshair
     pipeline: wgpu::RenderPipeline,
+    crosshair_pipeline: wgpu::RenderPipeline,  // Separate pipeline for inversion
     texture_bind_group: wgpu::BindGroup,
     screen_width: u32,
     screen_height: u32,
+    _dummy_texture: wgpu::Texture,         // Dummy texture for index 0
     _slot_texture: wgpu::Texture,           // Keep textures alive
     _slot_selected_texture: wgpu::Texture,  // Keep textures alive
+    _dummy_view: wgpu::TextureView,         // Keep views alive
     _slot_view: wgpu::TextureView,          // Keep views alive
     _slot_selected_view: wgpu::TextureView, // Keep views alive
 }
@@ -126,13 +130,25 @@ impl UIRenderer {
         let slot_texture = Self::load_texture(device, queue, hotbar_slot_texture, "hotbar_slot");
         let slot_selected_texture = Self::load_texture(device, queue, hotbar_slot_selected_texture, "hotbar_slot_selected");
 
+        // Create a 1x1 dummy white texture for index 0 (reserved for "no texture" in shader)
+        let dummy_texture = Self::create_dummy_texture(device, queue);
+        let dummy_view = dummy_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Create views for UI textures
         let slot_view = slot_texture.create_view(&wgpu::TextureViewDescriptor::default());
         let slot_selected_view = slot_selected_texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Combine UI texture views with block texture views for rendering block icons
-        let mut all_texture_views: Vec<&wgpu::TextureView> = vec![&slot_view, &slot_selected_view];
-        all_texture_views.extend(block_texture_views.iter().copied());
+        // Build texture array with proper indices:
+        // Index 0: Dummy (for "no texture" mode in shader)
+        // Index 1: Normal hotbar slot texture
+        // Index 2: Selected hotbar slot texture
+        // Index 3+: Block textures (in same order as world renderer)
+        let mut all_texture_views: Vec<&wgpu::TextureView> = vec![
+            &dummy_view,         // Index 0 - dummy for "no texture" mode
+            &slot_view,          // Index 1 - normal hotbar slot
+            &slot_selected_view, // Index 2 - selected hotbar slot
+        ];
+        all_texture_views.extend(block_texture_views.iter().copied()); // Index 3+ - block textures
 
         // Create sampler
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -198,6 +214,7 @@ impl UIRenderer {
             push_constant_ranges: &[],
         });
 
+        // Normal UI pipeline with alpha blending
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("UI Pipeline"),
             layout: Some(&render_pipeline_layout),
@@ -232,6 +249,52 @@ impl UIRenderer {
             cache: None,
         });
 
+        // Crosshair pipeline with color inversion blend mode
+        let crosshair_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Crosshair Inversion Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[UIVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::OneMinusDst,
+                            dst_factor: wgpu::BlendFactor::Zero,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::Zero,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         // Create empty buffers (will be updated each frame)
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("UI Vertex Buffer"),
@@ -251,15 +314,59 @@ impl UIRenderer {
             vertex_buffer,
             index_buffer,
             num_indices: 0,
+            crosshair_num_indices: 0,
             pipeline,
+            crosshair_pipeline,
             texture_bind_group,
             screen_width,
             screen_height,
+            _dummy_texture: dummy_texture,
             _slot_texture: slot_texture,
             _slot_selected_texture: slot_selected_texture,
+            _dummy_view: dummy_view,
             _slot_view: slot_view,
             _slot_selected_view: slot_selected_view,
         }
+    }
+
+    fn create_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
+        // Create a 1x1 white texture as a placeholder for index 0
+        let size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
+
+        let texture = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("Dummy Texture"),
+            size,
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+
+        // White pixel
+        let pixel_data: [u8; 4] = [255, 255, 255, 255];
+        queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: &texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            &pixel_data,
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
+            size,
+        );
+
+        texture
     }
 
     fn load_texture(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[u8], label: &str) -> wgpu::Texture {
@@ -318,18 +425,27 @@ impl UIRenderer {
         let mut vertices = Vec::new();
         let mut indices = Vec::new();
 
-        // Add crosshair (simple white cross in center of screen)
-        let crosshair_size = 0.015;  // Size in normalized coordinates
-        let crosshair_thickness = 0.003;
-        let white = [1.0, 1.0, 1.0, 1.0];
+        // Add crosshair (inverted colors, maintains 1:1 aspect ratio)
+        let aspect = self.screen_width as f32 / self.screen_height as f32;
+        let crosshair_size_pixels = 8.0;  // Size in pixels
+        let crosshair_thickness_pixels = 2.0;
+
+        // Convert pixels to normalized coordinates, accounting for aspect ratio
+        let crosshair_size_x = crosshair_size_pixels / self.screen_width as f32;
+        let crosshair_size_y = crosshair_size_pixels / self.screen_height as f32;
+        let crosshair_thickness_x = crosshair_thickness_pixels / self.screen_width as f32;
+        let crosshair_thickness_y = crosshair_thickness_pixels / self.screen_height as f32;
+
+        // Use special color value to signal inversion in shader (negative alpha)
+        let inverted = [1.0, 1.0, 1.0, -1.0];  // Negative alpha = invert mode
 
         // Horizontal line
         self.add_rect(
             &mut vertices,
             &mut indices,
-            0.5 - crosshair_size, 0.5 - crosshair_thickness,
-            0.5 + crosshair_size, 0.5 + crosshair_thickness,
-            white,
+            0.5 - crosshair_size_x, 0.5 - crosshair_thickness_y,
+            0.5 + crosshair_size_x, 0.5 + crosshair_thickness_y,
+            inverted,
             0, // No texture, just color
         );
 
@@ -337,11 +453,14 @@ impl UIRenderer {
         self.add_rect(
             &mut vertices,
             &mut indices,
-            0.5 - crosshair_thickness, 0.5 - crosshair_size,
-            0.5 + crosshair_thickness, 0.5 + crosshair_size,
-            white,
+            0.5 - crosshair_thickness_x, 0.5 - crosshair_size_y,
+            0.5 + crosshair_thickness_x, 0.5 + crosshair_size_y,
+            inverted,
             0, // No texture, just color
         );
+
+        // Store crosshair index count (12 indices = 2 rects * 6 indices per rect)
+        self.crosshair_num_indices = indices.len() as u32;
 
         // Add hotbar at bottom of screen
         let slot_size = 50.0;  // Size in pixels
@@ -361,7 +480,7 @@ impl UIRenderer {
             let y2 = (y + slot_size) / self.screen_height as f32;
 
             // Draw slot background
-            let slot_texture_index = if i == hotbar.selected_slot { 1 } else { 0 };
+            let slot_texture_index = if i == hotbar.selected_slot { 2 } else { 1 };
             self.add_rect(
                 &mut vertices,
                 &mut indices,
@@ -381,13 +500,13 @@ impl UIRenderer {
             let texture_name = hotbar.block_textures[i];
 
             if let Some(&texture_index) = block_textures.get(texture_name) {
-                // Add 2 to skip the UI slot textures
+                // Add 3 to skip dummy + 2 UI slot textures
                 self.add_rect(
                     &mut vertices,
                     &mut indices,
                     icon_x1, icon_y1, icon_x2, icon_y2,
                     [1.0, 1.0, 1.0, 1.0],
-                    texture_index + 2,  // Offset by 2 for UI textures
+                    texture_index + 3,  // Offset by 3 for dummy + 2 UI textures
                 );
             }
         }
@@ -445,10 +564,20 @@ impl UIRenderer {
         &self,
         render_pass: &mut wgpu::RenderPass,
     ) {
-        render_pass.set_pipeline(&self.pipeline);
         render_pass.set_bind_group(0, &self.texture_bind_group, &[]);
         render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
         render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
-        render_pass.draw_indexed(0..self.num_indices, 0, 0..1);
+
+        // Render crosshair with inversion blend mode
+        if self.crosshair_num_indices > 0 {
+            render_pass.set_pipeline(&self.crosshair_pipeline);
+            render_pass.draw_indexed(0..self.crosshair_num_indices, 0, 0..1);
+        }
+
+        // Render rest of UI with normal alpha blending
+        if self.num_indices > self.crosshair_num_indices {
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.draw_indexed(self.crosshair_num_indices..self.num_indices, 0, 0..1);
+        }
     }
 }

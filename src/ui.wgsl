@@ -42,11 +42,20 @@ fn vs_main(input: VertexInput) -> VertexOutput {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     if (in.texture_index == 0u) {
-        // No texture - just use color (for crosshair)
+        // No texture - check if we should invert
+        if (in.color.a < 0.0) {
+            // Negative alpha means invert colors (crosshair)
+            // Return white - the blend mode will handle inversion
+            return vec4<f32>(1.0, 1.0, 1.0, 1.0);
+        } else {
+            // Normal solid color
         return in.color;
+        }
     } else {
         // Sample texture and multiply by color
         let tex_color = textureSample(textures[in.texture_index], texture_sampler, in.tex_coords);
+
+        // Return texture color as-is (including transparency)
         return tex_color * in.color;
     }
 }
