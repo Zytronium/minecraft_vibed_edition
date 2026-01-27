@@ -687,3 +687,398 @@ fn load_texture_from_bytes_with_size(device: &wgpu::Device, queue: &wgpu::Queue,
 
     (texture, dimensions.0, dimensions.1)
 }
+
+/// Pause menu actions
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PauseAction {
+    Resume,
+    ExitToMenu,
+    ExitToDesktop,
+}
+
+/// Pause menu - rendered over the game world
+pub struct PauseMenu {
+    pipeline: wgpu::RenderPipeline,
+    button_bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    hovered_option: Option<usize>,
+    window_width: u32,
+    window_height: u32,
+
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: TextAtlas,
+    viewport: Viewport,
+    text_renderer: TextRenderer,
+    buffers: Vec<Buffer>,
+}
+
+impl PauseMenu {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
+        let button_texture = load_texture_from_bytes(device, queue, BUTTON_TEXTURE, "pause_button");
+        let button_view = button_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let button_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Nearest,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
+        let texture_bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        multisampled: false,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+            label: Some("pause_texture_bind_group_layout"),
+        });
+
+        let button_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &texture_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&button_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&button_sampler),
+                },
+            ],
+            label: Some("pause_button_bind_group"),
+        });
+
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Pause Menu Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("loading.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Pause Menu Pipeline Layout"),
+            bind_group_layouts: &[&texture_bind_group_layout],
+            push_constant_ranges: &[],
+        });
+
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Pause Menu Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_main"),
+                buffers: &[MenuVertex::desc()],
+                compilation_options: Default::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_main"),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: Default::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Pause Menu Vertex Buffer"),
+            size: 8192,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("Pause Menu Index Buffer"),
+            size: 8192,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+
+        // Text rendering setup
+        let mut font_system = FontSystem::new();
+        font_system.db_mut().load_font_data(Vec::from(FONT));
+
+        let swash_cache = SwashCache::new();
+        let cache = glyphon::Cache::new(device);
+        let mut viewport = Viewport::new(device, &cache);
+        viewport.update(queue, glyphon::Resolution { width, height });
+
+        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        let text_renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+
+        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+
+        // Create text buffers for pause menu
+        let mut buffers = Vec::new();
+
+        // Title
+        let mut title_buffer = Buffer::new(&mut font_system, Metrics::new(80.0, 100.0));
+        title_buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        title_buffer.set_text(&mut font_system, "Game Paused", font_attrs, Shaping::Advanced);
+        buffers.push(title_buffer);
+
+        // Button labels
+        let button_labels = ["Resume Game", "Exit to Main Menu", "Exit to Desktop"];
+        for label in &button_labels {
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(30.0, 40.0));
+            buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+            buffer.set_text(&mut font_system, label, font_attrs, Shaping::Advanced);
+            buffers.push(buffer);
+        }
+
+        let mut pause_menu = Self {
+            pipeline,
+            button_bind_group,
+            vertex_buffer,
+            index_buffer,
+            hovered_option: None,
+            window_width: width,
+            window_height: height,
+            font_system,
+            swash_cache,
+            atlas,
+            viewport,
+            text_renderer,
+            buffers,
+        };
+
+        // Create initial geometry
+        pause_menu.update_geometry(queue);
+
+        pause_menu
+    }
+
+    pub fn resize(&mut self, queue: &wgpu::Queue, width: u32, height: u32) {
+        self.window_width = width;
+        self.window_height = height;
+        self.viewport.update(queue, glyphon::Resolution { width, height });
+
+        // Update buffer sizes
+        for buffer in &mut self.buffers {
+            buffer.set_size(&mut self.font_system, Some(width as f32), Some(height as f32));
+        }
+    }
+
+    fn get_button_bounds(&self, index: usize) -> ButtonBounds {
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        let y = (280.0 + index as f32 * 80.0) * scale_y;
+
+        ButtonBounds {
+            left: 390.0 * scale_x,
+            right: 890.0 * scale_x,
+            top: y,
+            bottom: y + 50.0 * scale_y,
+        }
+    }
+
+    pub fn check_hover(&mut self, x: f64, y: f64) -> bool {
+        let old_hover = self.hovered_option;
+
+        for i in 0..3 {
+            let bounds = self.get_button_bounds(i);
+            if x as f32 >= bounds.left && x as f32 <= bounds.right &&
+                y as f32 >= bounds.top && y as f32 <= bounds.bottom {
+                self.hovered_option = Some(i);
+                return old_hover != self.hovered_option;
+            }
+        }
+
+        self.hovered_option = None;
+        old_hover != self.hovered_option
+    }
+
+    pub fn handle_click(&self, x: f64, y: f64) -> Option<PauseAction> {
+        for i in 0..3 {
+            let bounds = self.get_button_bounds(i);
+            if x as f32 >= bounds.left && x as f32 <= bounds.right &&
+                y as f32 >= bounds.top && y as f32 <= bounds.bottom {
+                return Some(match i {
+                    0 => PauseAction::Resume,
+                    1 => PauseAction::ExitToMenu,
+                    2 => PauseAction::ExitToDesktop,
+                    _ => unreachable!(),
+                });
+            }
+        }
+        None
+    }
+
+    pub fn update_geometry(&mut self, queue: &wgpu::Queue) {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        // Semi-transparent dark overlay - full screen quad
+        let overlay_verts = [
+            MenuVertex { position: [-1.0, -1.0], tex_coords: [0.0, 1.0], color: [0.0, 0.0, 0.0, 0.7] },
+            MenuVertex { position: [ 1.0, -1.0], tex_coords: [1.0, 1.0], color: [0.0, 0.0, 0.0, 0.7] },
+            MenuVertex { position: [ 1.0,  1.0], tex_coords: [1.0, 0.0], color: [0.0, 0.0, 0.0, 0.7] },
+            MenuVertex { position: [-1.0,  1.0], tex_coords: [0.0, 0.0], color: [0.0, 0.0, 0.0, 0.7] },
+        ];
+        vertices.extend_from_slice(&overlay_verts);
+        indices.extend_from_slice(&[0u32, 1, 2, 2, 3, 0]);
+
+        // Convert screen coordinates to normalized device coordinates (-1 to 1)
+        let to_ndc_x = |x: f32| (x / self.window_width as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| -((y / self.window_height as f32) * 2.0 - 1.0);
+
+        // Buttons
+        for i in 0..3 {
+            let bounds = self.get_button_bounds(i);
+
+            let brightness = if Some(i) == self.hovered_option { 1.2 } else { 1.0 };
+            let color = [brightness, brightness, brightness, 1.0];
+
+            let left = to_ndc_x(bounds.left);
+            let right = to_ndc_x(bounds.right);
+            let top = to_ndc_y(bounds.top);
+            let bottom = to_ndc_y(bounds.bottom);
+
+            let base = vertices.len() as u32;
+            let button_verts = [
+                MenuVertex { position: [left, bottom], tex_coords: [0.0, 1.0], color },
+                MenuVertex { position: [right, bottom], tex_coords: [1.0, 1.0], color },
+                MenuVertex { position: [right, top], tex_coords: [1.0, 0.0], color },
+                MenuVertex { position: [left, top], tex_coords: [0.0, 0.0], color },
+            ];
+            vertices.extend_from_slice(&button_verts);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
+    }
+
+    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue) {
+        // Don't call update_geometry here - it's called when hover changes
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("Pause Menu Render Encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Pause Menu Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,  // Load existing frame
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &self.button_bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+            render_pass.draw_indexed(0..24, 0, 0..1);  // 4 quads * 6 indices
+        }
+
+        // Render text
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        let mut text_areas = vec![
+            // Title
+            TextArea {
+                buffer: &self.buffers[0],
+                left: 440.0 * scale_x,
+                top: 120.0 * scale_y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: GlyphonColor::rgb(255, 255, 255),
+                custom_glyphs: &[],
+            },
+        ];
+
+        // Button labels
+        for i in 0..3 {
+            let y = (280.0 + i as f32 * 80.0) * scale_y + 8.0 * scale_y;  // +8 for vertical centering
+            let color = if Some(i) == self.hovered_option {
+                GlyphonColor::rgb(255, 255, 0)
+            } else {
+                GlyphonColor::rgb(230, 230, 230)
+            };
+
+            text_areas.push(TextArea {
+                buffer: &self.buffers[1 + i],
+                left: 480.0 * scale_x,
+                top: y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: color,
+                custom_glyphs: &[],
+            });
+        }
+
+        self.text_renderer
+            .prepare(
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )
+            .unwrap();
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass).unwrap();
+        }
+
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+}

@@ -21,7 +21,7 @@ use camera::Camera;
 use vertex::Vertex;
 use world::{World, ChunkMeshData};
 use loading::LoadingScreen;
-use menu::{MainMenu, WorldSize};
+use menu::{MainMenu, WorldSize, PauseMenu, PauseAction};
 use std::sync::mpsc;
 
 /// Game mode - Creative or Spectator
@@ -623,25 +623,11 @@ impl State {
                         println!("Flying: {}", self.player_state.is_flying);
                     }
 
-                    // Release cursor with Escape key
-                    if *key == KeyCode::Escape {
-                        let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::None);
-                        self.window.set_cursor_visible(true);
-                        println!("Cursor released - press any movement key to recapture");
-                    }
-
                     // Number keys 1-9 to select hotbar slots
                     if *key >= KeyCode::Digit1 && *key <= KeyCode::Digit9 {
                         let slot = (*key as u32 - KeyCode::Digit1 as u32) as usize;
                         self.hotbar.select_slot(slot);
                         println!("Selected slot {} - {:?}", slot + 1, self.hotbar.get_selected_block());
-                    }
-
-                    // Recapture cursor when any movement key is pressed
-                    if matches!(key, KeyCode::KeyW | KeyCode::KeyA | KeyCode::KeyS | KeyCode::KeyD | KeyCode::Space | KeyCode::ShiftLeft) {
-                        let _ = self.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
-                            .or_else(|_| self.window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
-                        self.window.set_cursor_visible(false);
                     }
                 } else {
                     self.keys_pressed.remove(key);
@@ -1289,6 +1275,7 @@ fn load_texture_from_bytes(device: &wgpu::Device, queue: &wgpu::Queue, bytes: &[
 enum GameState {
     Menu,
     Playing,
+    Paused,
 }
 
 struct MenuContext {
@@ -1304,6 +1291,7 @@ struct App {
     state: Option<State>,
     menu: Option<MainMenu>,
     menu_ctx: Option<MenuContext>,
+    pause_menu: Option<PauseMenu>,
     game_state: GameState,
     last_render_time: std::time::Instant,
     last_mouse_pos: Option<(f64, f64)>,
@@ -1469,10 +1457,51 @@ impl ApplicationHandler for App {
                 }
             }
             GameState::Playing => {
+                // Check for close requested - handle outside the state borrow
+                if matches!(event, WindowEvent::CloseRequested) {
+                    self.state = None;
+                    self.pause_menu = None;
+                    event_loop.exit();
+                    return;
+                }
+
                 if let Some(state) = &mut self.state {
+                    // Check for ESC key to pause BEFORE passing to state.input()
+                    if let WindowEvent::KeyboardInput {
+                        event: KeyEvent {
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
+                            state: key_state,
+                            ..
+                        },
+                        ..
+                    } = event {
+                        if key_state == ElementState::Pressed {
+                            // Transition to paused
+                            self.game_state = GameState::Paused;
+
+                            // Show cursor and release grab
+                            state.window.set_cursor_visible(true);
+                            let _ = state.window.set_cursor_grab(winit::window::CursorGrabMode::None);
+
+                            // Create pause menu if it doesn't exist
+                            if self.pause_menu.is_none() {
+                                self.pause_menu = Some(PauseMenu::new(
+                                    &state.device,
+                                    &state.queue,
+                                    state.config.format,
+                                    state.size.width,
+                                    state.size.height,
+                                ));
+                            }
+
+                            println!("Game paused");
+                            state.window.request_redraw();
+                            return;  // Don't process this event further
+                        }
+                    }
+
                     if !state.input(&event) {
                         match event {
-                            WindowEvent::CloseRequested => event_loop.exit(),
                             WindowEvent::Resized(physical_size) => {
                                 state.resize(physical_size);
                             }
@@ -1485,13 +1514,298 @@ impl ApplicationHandler for App {
                                 match state.render() {
                                     Ok(_) => {}
                                     Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
-                                    Err(wgpu::SurfaceError::OutOfMemory) => event_loop.exit(),
+                                    Err(wgpu::SurfaceError::OutOfMemory) => {
+                                        // Drop the borrow before cleaning up
+                                        drop(state);
+                                        self.state = None;
+                                        self.pause_menu = None;
+                                        event_loop.exit();
+                                        return;
+                                    }
                                     Err(e) => eprintln!("{:?}", e),
                                 }
                                 state.window.request_redraw();
                             }
                             _ => {}
                         }
+                    }
+                }
+            }
+            GameState::Paused => {
+                // Check for close requested - handle outside the state borrow
+                if matches!(event, WindowEvent::CloseRequested) {
+                    self.state = None;
+                    self.pause_menu = None;
+                    event_loop.exit();
+                    return;
+                }
+
+                if let Some(state) = &mut self.state {
+                    match event {
+                        WindowEvent::Resized(physical_size) => {
+                            state.resize(physical_size);
+                            if let Some(pause_menu) = &mut self.pause_menu {
+                                pause_menu.resize(&state.queue, physical_size.width, physical_size.height);
+                            }
+                        }
+                        WindowEvent::RedrawRequested => {
+                            // Don't call state.render() - it presents the frame
+                            // Instead, render both game and pause menu in one pass
+                            match state.surface.get_current_texture() {
+                                Ok(output) => {
+                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                                    // Render the frozen game world
+                                    let depth_texture = state.device.create_texture(&wgpu::TextureDescriptor {
+                                        label: Some("Pause Depth Texture"),
+                                        size: wgpu::Extent3d {
+                                            width: state.config.width,
+                                            height: state.config.height,
+                                            depth_or_array_layers: 1,
+                                        },
+                                        mip_level_count: 1,
+                                        sample_count: 1,
+                                        dimension: wgpu::TextureDimension::D2,
+                                        format: wgpu::TextureFormat::Depth32Float,
+                                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                        view_formats: &[],
+                                    });
+                                    let depth_view = depth_texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+                                    let mut encoder = state.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                                        label: Some("Pause Render Encoder"),
+                                    });
+
+                                    // Render 3D world (frozen)
+                                    {
+                                        let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("Frozen World Render Pass"),
+                                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                                view: &view,
+                                                resolve_target: None,
+                                                ops: wgpu::Operations {
+                                                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                                                        r: 0.5, g: 0.7, b: 1.0, a: 1.0,
+                                                    }),
+                                                    store: wgpu::StoreOp::Store,
+                                                },
+                                            })],
+                                            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                                                view: &depth_view,
+                                                depth_ops: Some(wgpu::Operations {
+                                                    load: wgpu::LoadOp::Clear(1.0),
+                                                    store: wgpu::StoreOp::Store,
+                                                }),
+                                                stencil_ops: None,
+                                            }),
+                                            timestamp_writes: None,
+                                            occlusion_query_set: None,
+                                        });
+
+                                        render_pass.set_bind_group(0, &state.camera_bind_group, &[]);
+                                        render_pass.set_bind_group(1, &state.texture_bind_group, &[]);
+
+                                        // Render opaque geometry
+                                        render_pass.set_pipeline(&state.render_pipeline_opaque);
+                                        for chunk_mesh in &state.chunk_meshes {
+                                            if chunk_mesh.opaque_num_indices > 0 {
+                                                render_pass.set_vertex_buffer(0, chunk_mesh.opaque_vertex_buffer.slice(..));
+                                                render_pass.set_index_buffer(chunk_mesh.opaque_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                                                render_pass.draw_indexed(0..chunk_mesh.opaque_num_indices, 0, 0..1);
+                                            }
+                                        }
+
+                                        // Render transparent geometry
+                                        render_pass.set_pipeline(&state.render_pipeline_transparent);
+                                        for chunk_mesh in &state.chunk_meshes {
+                                            if chunk_mesh.transparent_num_indices > 0 {
+                                                render_pass.set_vertex_buffer(0, chunk_mesh.transparent_vertex_buffer.slice(..));
+                                                render_pass.set_index_buffer(chunk_mesh.transparent_index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+                                                render_pass.draw_indexed(0..chunk_mesh.transparent_num_indices, 0, 0..1);
+                                            }
+                                        }
+                                    }
+
+                                    // Render UI (hotbar/crosshair) over the game
+                                    {
+                                        let mut ui_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                            label: Some("Frozen UI Render Pass"),
+                                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                                view: &view,
+                                                resolve_target: None,
+                                                ops: wgpu::Operations {
+                                                    load: wgpu::LoadOp::Load,
+                                                    store: wgpu::StoreOp::Store,
+                                                },
+                                            })],
+                                            depth_stencil_attachment: None,
+                                            timestamp_writes: None,
+                                            occlusion_query_set: None,
+                                        });
+
+                                        state.ui_renderer.render(&mut ui_render_pass);
+                                    }
+
+                                    state.queue.submit(std::iter::once(encoder.finish()));
+
+                                    // Now render pause menu over everything
+                                    if let Some(pause_menu) = &mut self.pause_menu {
+                                        pause_menu.render(&view, &state.device, &state.queue);
+                                    }
+
+                                    output.present();
+                                }
+                                Err(wgpu::SurfaceError::Lost) => state.resize(state.size),
+                                Err(wgpu::SurfaceError::OutOfMemory) => {
+                                    // Drop the borrow before cleaning up
+                                    drop(state);
+                                    self.state = None;
+                                    self.pause_menu = None;
+                                    event_loop.exit();
+                                    return;
+                                }
+                                Err(e) => eprintln!("{:?}", e),
+                            }
+                            state.window.request_redraw();
+                        }
+                        WindowEvent::CursorMoved { position, .. } => {
+                            self.last_mouse_pos = Some((position.x, position.y));
+                            if let Some(pause_menu) = &mut self.pause_menu {
+                                if pause_menu.check_hover(position.x, position.y) {
+                                    pause_menu.update_geometry(&state.queue);
+                                    state.window.request_redraw();
+                                }
+                            }
+                        }
+                        WindowEvent::MouseInput {
+                            state: mouse_state,
+                            button: MouseButton::Left,
+                            ..
+                        } => {
+                            if mouse_state == ElementState::Pressed {
+                                if let Some(pause_menu) = &self.pause_menu {
+                                    if let Some((x, y)) = self.last_mouse_pos {
+                                        if let Some(action) = pause_menu.handle_click(x, y) {
+                                            match action {
+                                                PauseAction::Resume => {
+                                                    // Resume game
+                                                    self.game_state = GameState::Playing;
+                                                    self.last_render_time = std::time::Instant::now();  // Reset time to prevent huge dt
+                                                    state.window.set_cursor_visible(false);
+                                                    let _ = state.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                                        .or_else(|_| state.window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                                                    println!("Game resumed");
+                                                }
+                                                PauseAction::ExitToMenu => {
+                                                    println!("Exiting to main menu");
+
+                                                    // Get window reference before dropping state
+                                                    let window = state.window.clone();
+                                                    window.set_cursor_visible(true);
+                                                    let _ = window.set_cursor_grab(winit::window::CursorGrabMode::None);
+
+                                                    // Drop the game state to free resources
+                                                    self.state = None;
+                                                    self.pause_menu = None;
+
+                                                    // Create new menu context using the same window
+                                                    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+                                                        backends: wgpu::Backends::all(),
+                                                        ..Default::default()
+                                                    });
+                                                    let surface = instance.create_surface(window.clone()).unwrap();
+                                                    let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                                                        power_preference: wgpu::PowerPreference::default(),
+                                                        compatible_surface: Some(&surface),
+                                                        force_fallback_adapter: false,
+                                                    })).unwrap();
+
+                                                    let (device, queue) = pollster::block_on(adapter.request_device(
+                                                        &wgpu::DeviceDescriptor {
+                                                            label: None,
+                                                            required_features: wgpu::Features::empty(),
+                                                            required_limits: wgpu::Limits::default(),
+                                                            memory_hints: Default::default(),
+                                                        },
+                                                        None,
+                                                    )).unwrap();
+
+                                                    let size = window.inner_size();
+                                                    let surface_caps = surface.get_capabilities(&adapter);
+                                                    let surface_format = surface_caps.formats.iter()
+                                                        .find(|f| f.is_srgb())
+                                                        .copied()
+                                                        .unwrap_or(surface_caps.formats[0]);
+
+                                                    let config = wgpu::SurfaceConfiguration {
+                                                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                                        format: surface_format,
+                                                        width: size.width,
+                                                        height: size.height,
+                                                        present_mode: surface_caps.present_modes[0],
+                                                        alpha_mode: surface_caps.alpha_modes[0],
+                                                        view_formats: vec![],
+                                                        desired_maximum_frame_latency: 2,
+                                                    };
+                                                    surface.configure(&device, &config);
+
+                                                    let mut menu = MainMenu::new(&device, &queue, surface_format, size.width, size.height);
+                                                    let bg_indices = menu.update_geometry(&queue);
+
+                                                    // Render initial menu
+                                                    if let Ok(output) = surface.get_current_texture() {
+                                                        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                                        menu.render(&view, &device, &queue, bg_indices);
+                                                        output.present();
+                                                    }
+
+                                                    // Transition to menu state
+                                                    self.menu = Some(menu);
+                                                    self.menu_ctx = Some(MenuContext {
+                                                        instance,
+                                                        surface,
+                                                        device,
+                                                        queue,
+                                                        window,
+                                                        surface_format,
+                                                    });
+                                                    self.game_state = GameState::Menu;
+                                                    println!("Transitioned to main menu");
+                                                }
+                                                PauseAction::ExitToDesktop => {
+                                                    println!("Exiting to desktop");
+
+                                                    // Clean up state before exiting to prevent segfault
+                                                    self.state = None;
+                                                    self.pause_menu = None;
+
+                                                    event_loop.exit();
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        WindowEvent::KeyboardInput {
+                            event: KeyEvent {
+                                physical_key: PhysicalKey::Code(KeyCode::Escape),
+                                state: key_state,
+                                ..
+                            },
+                            ..
+                        } => {
+                            if key_state == ElementState::Pressed {
+                                // Resume game on ESC
+                                self.game_state = GameState::Playing;
+                                self.last_render_time = std::time::Instant::now();  // Reset time to prevent huge dt
+                                state.window.set_cursor_visible(false);
+                                let _ = state.window.set_cursor_grab(winit::window::CursorGrabMode::Locked)
+                                    .or_else(|_| state.window.set_cursor_grab(winit::window::CursorGrabMode::Confined));
+                                println!("Game resumed");
+                            }
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1528,7 +1842,7 @@ impl ApplicationHandler for App {
                     ctx.window.request_redraw();
                 }
             }
-            GameState::Playing => {
+            GameState::Playing | GameState::Paused => {
                 if let Some(state) = &self.state {
                     state.window.request_redraw();
                 }
@@ -1545,6 +1859,7 @@ fn main() {
         state: None,
         menu: None,
         menu_ctx: None,
+        pause_menu: None,
         game_state: GameState::Menu,
         last_render_time: std::time::Instant::now(),
         last_mouse_pos: None,
