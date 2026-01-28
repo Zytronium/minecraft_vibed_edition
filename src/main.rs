@@ -123,7 +123,8 @@ fn main() {
     let mut app = app::App {
         state: None,
         menu: None,
-        world_selection: None,  // NEW
+        world_selection: None,
+        world_creation: None,
         menu_ctx: None,
         pause_menu: None,
         game_state: app::GameState::Menu,

@@ -8,16 +8,16 @@ const BUTTON_TEXTURE: &[u8] = include_bytes!("../assets/textures/ui/button2.png"
 const WALLPAPER: &[u8] = include_bytes!("../assets/wallpaper.png");
 
 pub struct MainMenu {
-    pipeline: wgpu::RenderPipeline,
-    wallpaper_bind_group: wgpu::BindGroup,
-    button_bind_group: wgpu::BindGroup,
+    pub pipeline: wgpu::RenderPipeline,
+    pub wallpaper_bind_group: wgpu::BindGroup,
+    pub button_bind_group: wgpu::BindGroup,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
     hovered_option: Option<usize>,
     window_width: u32,
     window_height: u32,
-    wallpaper_width: u32,
-    wallpaper_height: u32,
+    pub wallpaper_width: u32,
+    pub wallpaper_height: u32,
 
     font_system: FontSystem,
     swash_cache: SwashCache,
@@ -25,11 +25,6 @@ pub struct MainMenu {
     viewport: Viewport,
     text_renderer: TextRenderer,
     buffers: Vec<Buffer>,
-
-    // World naming fields
-    world_name_input: String,
-    world_name_error: Option<String>,
-    input_focused: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -271,56 +266,14 @@ impl MainMenu {
         buffer.set_text(&mut font_system, "Minecraft: Vibed Edition", font_attrs, Shaping::Advanced);
         buffers.push(buffer);
 
-        // Subtitle
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(40.0, 50.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Select World Size", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
-
-        // Options
-        let options = [
-            "Tiny (8x8)",
-            "Small (16x16)",
-            "Medium (24x24)",
-            "Large (32x32)",
-            "Enormous (64x64)",
-        ];
+        // 3 main menu buttons
+        let options = ["Load World", "Create New World", "Quit"];
         for option in options {
             let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
             buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
             buffer.set_text(&mut font_system, option, font_attrs, Shaping::Advanced);
             buffers.push(buffer);
         }
-
-        // Load World button (button 5)
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Load World", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
-
-        // Quit button (button 6)
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Quit", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
-
-        // Instructions
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(25.0, 35.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "Click to select a world size", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
-
-        // World name input label
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(22.0, 32.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "World Name:", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
-
-        // World name input text (initially empty)
-        let mut buffer = Buffer::new(&mut font_system, Metrics::new(22.0, 32.0));
-        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
-        buffer.set_text(&mut font_system, "", font_attrs, Shaping::Advanced);
-        buffers.push(buffer);
 
         Self {
             pipeline,
@@ -339,9 +292,6 @@ impl MainMenu {
             viewport,
             text_renderer,
             buffers,
-            world_name_input: String::new(),
-            world_name_error: None,
-            input_focused: false,
         }
     }
 
@@ -365,7 +315,7 @@ impl MainMenu {
         let mx = mouse_x as f32;
         let my = mouse_y as f32;
 
-        for i in 0..7 {  // Changed from 5 to 7
+        for i in 0..3 {  // Only 3 buttons now
             let bounds = self.get_button_bounds(i);
             if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
                 self.hovered_option = Some(i);
@@ -377,35 +327,14 @@ impl MainMenu {
         false
     }
 
-    /// Handle mouse click with proper coordinate handling
-    /// Returns the selected world size if a button was clicked and world name is valid
-    pub fn handle_click(&mut self, mouse_x: f64, mouse_y: f64) -> Option<WorldSize> {
-        let mx = mouse_x as f32;
-        let my = mouse_y as f32;
-
-        for i in 0..5 {
-            let bounds = self.get_button_bounds(i);
-            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
-                // Validate world name before allowing creation
-                if self.validate_world_name() {
-                    return Some(WorldSize::from_index(i));
-                } else {
-                    return None;  // Validation failed
-                }
-            }
-        }
-
-        None
-    }
-
     /// Get which button (by index) was clicked, if any
-    /// Returns button index 0-6, or None if no button clicked
+    /// Returns button index 0-2, or None if no button clicked
     pub fn get_clicked_button(&self, mouse_x: f64, mouse_y: f64) -> Option<usize> {
         let mx = mouse_x as f32;
         let my = mouse_y as f32;
 
-        // Check all 7 buttons (5 world sizes + Load World + Quit)
-        for i in 0..7 {
+        // Check all 3 buttons (Load World, Create New World, Quit)
+        for i in 0..3 {
             let bounds = self.get_button_bounds(i);
             if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
                 return Some(i);
@@ -428,76 +357,6 @@ impl MainMenu {
         for buffer in &mut self.buffers {
             buffer.set_size(&mut self.font_system, Some(new_width as f32), Some(new_height as f32));
         }
-    }
-
-    /// Check if text input was clicked and update focus state
-    pub fn check_input_click(&mut self, x: f64, y: f64) -> bool {
-        let scale_x = self.window_width as f32 / 1280.0;
-        let scale_y = self.window_height as f32 / 720.0;
-
-        let input_x = 500.0 * scale_x;
-        let input_width = 400.0 * scale_x;
-        let input_y = 635.0 * scale_y;
-        let input_height = 30.0 * scale_y;
-
-        let clicked = x as f32 >= input_x && x as f32 <= input_x + input_width
-            && y as f32 >= input_y && y as f32 <= input_y + input_height;
-
-        let old_focused = self.input_focused;
-        self.input_focused = clicked;
-
-        old_focused != self.input_focused
-    }
-
-    /// Handle text input
-    pub fn handle_text_input(&mut self, character: char) {
-        if self.input_focused && self.world_name_input.len() < 30 && !character.is_control() {
-            self.world_name_error = None;
-            self.world_name_input.push(character);
-
-            let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
-            self.buffers[11].set_text(&mut self.font_system, &self.world_name_input, font_attrs, Shaping::Advanced);
-        }
-    }
-
-    /// Handle backspace
-    pub fn handle_backspace(&mut self) {
-        if self.input_focused && !self.world_name_input.is_empty() {
-            self.world_name_error = None;
-            self.world_name_input.pop();
-
-            let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
-            self.buffers[11].set_text(&mut self.font_system, &self.world_name_input, font_attrs, Shaping::Advanced);
-        }
-    }
-
-    /// Validate world name and return true if valid
-    fn validate_world_name(&mut self) -> bool {
-        self.world_name_error = None;
-
-        if self.world_name_input.trim().is_empty() {
-            self.world_name_error = Some("World name cannot be empty".to_string());
-            return false;
-        }
-
-        if let Ok(worlds) = crate::save::list_worlds() {
-            if worlds.iter().any(|w| w == self.world_name_input.trim()) {
-                self.world_name_error = Some("World name already exists".to_string());
-                return false;
-            }
-        }
-
-        true
-    }
-
-    /// Get the world name
-    pub fn get_world_name(&self) -> String {
-        self.world_name_input.trim().to_string()
-    }
-
-    /// Check if input is focused
-    pub fn is_input_focused(&self) -> bool {
-        self.input_focused
     }
 
     /// Calculate texture coordinates for crop-to-fit behavior (like CSS object-fit: cover)
@@ -555,7 +414,7 @@ impl MainMenu {
         let to_ndc_y = |y: f32| -((y / self.window_height as f32) * 2.0 - 1.0);
 
         // Draw button backgrounds using button texture
-        for i in 0..7 {
+        for i in 0..3 {
             let bounds = self.get_button_bounds(i);
 
             // Only highlight if mouse is hovering over this button
@@ -581,35 +440,6 @@ impl MainMenu {
             vertices.extend_from_slice(&button_verts);
             indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
         }
-
-        // Add input box background
-        let scale_x = self.window_width as f32 / 1280.0;
-        let scale_y = self.window_height as f32 / 720.0;
-        let input_x = 500.0 * scale_x;
-        let input_width = 400.0 * scale_x;
-        let input_y = 635.0 * scale_y;
-        let input_height = 30.0 * scale_y;
-
-        let input_color = if self.input_focused {
-            [1.0, 1.0, 1.0, 1.0]  // White when focused
-        } else {
-            [0.8, 0.8, 0.8, 1.0]  // Slightly dimmed when not focused
-        };
-
-        let left = to_ndc_x(input_x);
-        let right = to_ndc_x(input_x + input_width);
-        let top = to_ndc_y(input_y);
-        let bottom = to_ndc_y(input_y + input_height);
-
-        let base = vertices.len() as u32;
-        let input_verts = [
-            MenuVertex { position: [left, bottom], tex_coords: [0.0, 1.0], color: input_color },
-            MenuVertex { position: [right, bottom], tex_coords: [1.0, 1.0], color: input_color },
-            MenuVertex { position: [right, top], tex_coords: [1.0, 0.0], color: input_color },
-            MenuVertex { position: [left, top], tex_coords: [0.0, 0.0], color: input_color },
-        ];
-        vertices.extend_from_slice(&input_verts);
-        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
 
         // Write to buffer at offset after background (6 indices for background quad)
         let vertex_offset = 4 * std::mem::size_of::<MenuVertex>(); // 4 vertices for background
@@ -665,18 +495,9 @@ impl MainMenu {
         let scale_x = self.window_width as f32 / 1280.0;
         let scale_y = self.window_height as f32 / 720.0;
 
-        // Update instructions buffer with error if present (do this BEFORE creating text_areas)
-        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
-        let instruction_color = if let Some(ref error) = self.world_name_error {
-            self.buffers[9].set_text(&mut self.font_system, error, font_attrs, Shaping::Advanced);
-            GlyphonColor::rgb(255, 80, 80)  // Red for error
-        } else {
-            self.buffers[9].set_text(&mut self.font_system, "Click to select a world size", font_attrs, Shaping::Advanced);
-            GlyphonColor::rgb(153, 153, 153)  // Gray for normal
-        };
-
         // Prepare text areas
         let mut text_areas = vec![
+            // Title
             TextArea {
                 buffer: &self.buffers[0],
                 left: 340.0 * scale_x,
@@ -686,21 +507,11 @@ impl MainMenu {
                 default_color: GlyphonColor::rgb(255, 255, 255),
                 custom_glyphs: &[],
             },
-            TextArea {
-                buffer: &self.buffers[1],
-                left: 440.0 * scale_x,
-                top: 200.0 * scale_y,
-                scale: 1.0,
-                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
-                default_color: GlyphonColor::rgb(204, 204, 204),
-                custom_glyphs: &[],
-            },
         ];
 
-        // Options - centered in buttons
-        for i in 0..7 {
-            let y = (300.0 + i as f32 * 60.0) * scale_y + 8.0 * scale_y; // Offset for vertical centering
-            // Only highlight if mouse is hovering over this button
+        // 3 button labels
+        for i in 0..3 {
+            let y = (300.0 + i as f32 * 60.0) * scale_y + 8.0 * scale_y;
             let color = if Some(i) == self.hovered_option {
                 GlyphonColor::rgb(255, 255, 0) // Yellow when hovering
             } else {
@@ -708,8 +519,8 @@ impl MainMenu {
             };
 
             text_areas.push(TextArea {
-                buffer: &self.buffers[2 + i],
-                left: 420.0 * scale_x,
+                buffer: &self.buffers[1 + i],
+                left: 520.0 * scale_x,  // Centered since text is longer
                 top: y,
                 scale: 1.0,
                 bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
@@ -718,45 +529,539 @@ impl MainMenu {
             });
         }
 
-        // Instructions (with error color if error present)
-        text_areas.push(TextArea {
-            buffer: &self.buffers[9],
-            left: 335.0 * scale_x,
-            top: 650.0 * scale_y,
-            scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
-            default_color: instruction_color,
-            custom_glyphs: &[],
+        // Prepare text areas
+        self.text_renderer
+            .prepare(
+                device,
+                queue,
+                &mut self.font_system,
+                &mut self.atlas,
+                &self.viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )
+            .unwrap();
+
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: None,
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            self.text_renderer.render(&self.atlas, &self.viewport, &mut pass).unwrap();
+        }
+
+        queue.submit(std::iter::once(encoder.finish()));
+    }
+}
+
+// World Creation Menu - for setting world name and size
+pub struct WorldCreationMenu {
+    pipeline: wgpu::RenderPipeline,
+    wallpaper_bind_group: wgpu::BindGroup,
+    button_bind_group: wgpu::BindGroup,
+    vertex_buffer: wgpu::Buffer,
+    index_buffer: wgpu::Buffer,
+    hovered_option: Option<usize>,
+    window_width: u32,
+    window_height: u32,
+    wallpaper_width: u32,
+    wallpaper_height: u32,
+
+    font_system: FontSystem,
+    swash_cache: SwashCache,
+    atlas: TextAtlas,
+    viewport: Viewport,
+    text_renderer: TextRenderer,
+    buffers: Vec<Buffer>,
+
+    world_name_input: String,
+    world_name_error: Option<String>,
+    input_focused: bool,
+}
+
+impl WorldCreationMenu {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, width: u32, height: u32,
+               pipeline: wgpu::RenderPipeline, wallpaper_bind_group: wgpu::BindGroup, button_bind_group: wgpu::BindGroup,
+               wallpaper_width: u32, wallpaper_height: u32) -> Self {
+        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("WorldCreation Vertex Buffer"),
+            size: (200 * std::mem::size_of::<MenuVertex>()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
 
-        // World name input label
-        text_areas.push(TextArea {
-            buffer: &self.buffers[10],
-            left: 510.0 * scale_x,
-            top: 610.0 * scale_y,
-            scale: 1.0,
-            bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
-            default_color: GlyphonColor::rgb(200, 200, 200),
-            custom_glyphs: &[],
+        let index_buffer = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("WorldCreation Index Buffer"),
+            size: (2000 * std::mem::size_of::<u32>()) as u64,
+            usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
+
+        let mut font_system = FontSystem::new();
+        font_system.db_mut().load_font_data(FONT.to_vec());
+
+        let swash_cache = SwashCache::new();
+        let cache = glyphon::Cache::new(device);
+        let mut viewport = Viewport::new(device, &cache);
+        viewport.update(queue, glyphon::Resolution { width, height });
+
+        let mut atlas = TextAtlas::new(device, queue, &cache, format);
+        let text_renderer = TextRenderer::new(&mut atlas, device, wgpu::MultisampleState::default(), None);
+
+        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+
+        let mut buffers = Vec::new();
+
+        // Title
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(60.0, 70.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "Create New World", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        // World name label
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(22.0, 32.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "World Name:", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
 
         // World name input text
-        let input_color = if self.input_focused {
-            GlyphonColor::rgb(255, 255, 255)
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(22.0, 32.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        // 5 world size buttons
+        let options = ["Tiny (8x8)", "Small (16x16)", "Medium (24x24)", "Large (32x32)", "Enormous (64x64)"];
+        for option in options {
+            let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
+            buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+            buffer.set_text(&mut font_system, option, font_attrs, Shaping::Advanced);
+            buffers.push(buffer);
+        }
+
+        // Back button
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(28.0, 38.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "Back", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        // Error/info message
+        let mut buffer = Buffer::new(&mut font_system, Metrics::new(20.0, 28.0));
+        buffer.set_size(&mut font_system, Some(width as f32), Some(height as f32));
+        buffer.set_text(&mut font_system, "", font_attrs, Shaping::Advanced);
+        buffers.push(buffer);
+
+        Self {
+            pipeline,
+            wallpaper_bind_group,
+            button_bind_group,
+            vertex_buffer,
+            index_buffer,
+            hovered_option: None,
+            window_width: width,
+            window_height: height,
+            wallpaper_width,
+            wallpaper_height,
+            font_system,
+            swash_cache,
+            atlas,
+            viewport,
+            text_renderer,
+            buffers,
+            world_name_input: String::new(),
+            world_name_error: None,
+            input_focused: false,
+        }
+    }
+
+    fn get_button_bounds(&self, option_index: usize) -> ButtonBounds {
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        let base_y = 260.0 + option_index as f32 * 60.0;
+        ButtonBounds {
+            left: 380.0 * scale_x,
+            right: 900.0 * scale_x,
+            top: base_y * scale_y,
+            bottom: (base_y + 45.0) * scale_y,
+        }
+    }
+
+    fn get_input_bounds(&self) -> ButtonBounds {
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        ButtonBounds {
+            left: 440.0 * scale_x,
+            right: 840.0 * scale_x,
+            top: 200.0 * scale_y,
+            bottom: 230.0 * scale_y,
+        }
+    }
+
+    pub fn check_hover(&mut self, mouse_x: f64, mouse_y: f64) -> bool {
+        let mx = mouse_x as f32;
+        let my = mouse_y as f32;
+
+        for i in 0..6 {  // 5 world sizes + Back button
+            let bounds = self.get_button_bounds(i);
+            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
+                self.hovered_option = Some(i);
+                return true;
+            }
+        }
+
+        self.hovered_option = None;
+        false
+    }
+
+    pub fn check_input_click(&mut self, x: f64, y: f64) -> bool {
+        let bounds = self.get_input_bounds();
+        let clicked = x as f32 >= bounds.left && x as f32 <= bounds.right
+            && y as f32 >= bounds.top && y as f32 <= bounds.bottom;
+
+        let old_focused = self.input_focused;
+        self.input_focused = clicked;
+        old_focused != self.input_focused
+    }
+
+    pub fn handle_text_input(&mut self, character: char) {
+        if self.input_focused && self.world_name_input.len() < 30 && !character.is_control() {
+            self.world_name_error = None;
+            self.world_name_input.push(character);
+
+            let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+            self.buffers[2].set_text(&mut self.font_system, &self.world_name_input, font_attrs, Shaping::Advanced);
+        }
+    }
+
+    pub fn handle_backspace(&mut self) {
+        if self.input_focused && !self.world_name_input.is_empty() {
+            self.world_name_error = None;
+            self.world_name_input.pop();
+
+            let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+            self.buffers[2].set_text(&mut self.font_system, &self.world_name_input, font_attrs, Shaping::Advanced);
+        }
+    }
+
+    fn validate_world_name(&mut self) -> bool {
+        self.world_name_error = None;
+
+        if self.world_name_input.trim().is_empty() {
+            self.world_name_error = Some("World name cannot be empty".to_string());
+            return false;
+        }
+
+        if let Ok(worlds) = crate::save::list_worlds() {
+            if worlds.iter().any(|w| w == self.world_name_input.trim()) {
+                self.world_name_error = Some("World name already exists".to_string());
+                return false;
+            }
+        }
+
+        true
+    }
+
+    pub fn handle_click(&mut self, mouse_x: f64, mouse_y: f64) -> Option<WorldSize> {
+        let mx = mouse_x as f32;
+        let my = mouse_y as f32;
+
+        for i in 0..5 {
+            let bounds = self.get_button_bounds(i);
+            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
+                if self.validate_world_name() {
+                    return Some(WorldSize::from_index(i));
+                } else {
+                    return None;
+                }
+            }
+        }
+
+        None
+    }
+
+    pub fn get_clicked_button(&self, mouse_x: f64, mouse_y: f64) -> Option<usize> {
+        let mx = mouse_x as f32;
+        let my = mouse_y as f32;
+
+        for i in 0..6 {
+            let bounds = self.get_button_bounds(i);
+            if mx >= bounds.left && mx <= bounds.right && my >= bounds.top && my <= bounds.bottom {
+                return Some(i);
+            }
+        }
+
+        None
+    }
+
+    pub fn get_world_name(&self) -> String {
+        self.world_name_input.trim().to_string()
+    }
+
+    pub fn is_input_focused(&self) -> bool {
+        self.input_focused
+    }
+
+    pub fn resize(&mut self, queue: &wgpu::Queue, new_width: u32, new_height: u32) {
+        self.window_width = new_width;
+        self.window_height = new_height;
+        self.viewport.update(queue, glyphon::Resolution {
+            width: new_width,
+            height: new_height
+        });
+
+        for buffer in &mut self.buffers {
+            buffer.set_size(&mut self.font_system, Some(new_width as f32), Some(new_height as f32));
+        }
+    }
+
+    fn calculate_crop_coords(&self) -> (f32, f32, f32, f32) {
+        let window_aspect = self.window_width as f32 / self.window_height as f32;
+        let image_aspect = self.wallpaper_width as f32 / self.wallpaper_height as f32;
+
+        if window_aspect > image_aspect {
+            let v_range = image_aspect / window_aspect;
+            let v_min = (1.0 - v_range) / 2.0;
+            let v_max = (1.0 + v_range) / 2.0;
+            (0.0, v_min, 1.0, v_max)
         } else {
-            GlyphonColor::rgb(180, 180, 180)
+            let u_range = window_aspect / image_aspect;
+            let u_min = (1.0 - u_range) / 2.0;
+            let u_max = (1.0 + u_range) / 2.0;
+            (u_min, 0.0, u_max, 1.0)
+        }
+    }
+
+    pub fn update_geometry(&mut self, queue: &wgpu::Queue) -> usize {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        let (u_min, v_min, u_max, v_max) = self.calculate_crop_coords();
+
+        let bg_verts = [
+            MenuVertex { position: [-1.0, -1.0], tex_coords: [u_min, v_max], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [ 1.0, -1.0], tex_coords: [u_max, v_max], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [ 1.0,  1.0], tex_coords: [u_max, v_min], color: [0.4, 0.4, 0.4, 1.0] },
+            MenuVertex { position: [-1.0,  1.0], tex_coords: [u_min, v_min], color: [0.4, 0.4, 0.4, 1.0] },
+        ];
+        vertices.extend_from_slice(&bg_verts);
+        indices.extend_from_slice(&[0u32, 1, 2, 2, 3, 0]);
+
+        queue.write_buffer(&self.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+        queue.write_buffer(&self.index_buffer, 0, bytemuck::cast_slice(&indices));
+        indices.len()
+    }
+
+    pub fn update_button_geometry(&mut self, queue: &wgpu::Queue) -> (usize, usize) {
+        let mut vertices = Vec::new();
+        let mut indices = Vec::new();
+
+        let to_ndc_x = |x: f32| (x / self.window_width as f32) * 2.0 - 1.0;
+        let to_ndc_y = |y: f32| -((y / self.window_height as f32) * 2.0 - 1.0);
+
+        // Draw input box
+        let input_bounds = self.get_input_bounds();
+        let input_color = if self.input_focused {
+            [1.0, 1.0, 1.0, 1.0]
+        } else {
+            [0.8, 0.8, 0.8, 1.0]
+        };
+
+        let left = to_ndc_x(input_bounds.left);
+        let right = to_ndc_x(input_bounds.right);
+        let top = to_ndc_y(input_bounds.top);
+        let bottom = to_ndc_y(input_bounds.bottom);
+
+        let base = vertices.len() as u32;
+        let input_verts = [
+            MenuVertex { position: [left, bottom], tex_coords: [0.0, 1.0], color: input_color },
+            MenuVertex { position: [right, bottom], tex_coords: [1.0, 1.0], color: input_color },
+            MenuVertex { position: [right, top], tex_coords: [1.0, 0.0], color: input_color },
+            MenuVertex { position: [left, top], tex_coords: [0.0, 0.0], color: input_color },
+        ];
+        vertices.extend_from_slice(&input_verts);
+        indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+
+        // Draw 6 buttons (5 world sizes + Back)
+        for i in 0..6 {
+            let bounds = self.get_button_bounds(i);
+            let color = if Some(i) == self.hovered_option {
+                [1.2, 1.2, 1.2, 1.0]
+            } else {
+                [1.0, 1.0, 1.0, 1.0]
+            };
+
+            let left = to_ndc_x(bounds.left);
+            let right = to_ndc_x(bounds.right);
+            let top = to_ndc_y(bounds.top);
+            let bottom = to_ndc_y(bounds.bottom);
+
+            let base = vertices.len() as u32;
+            let button_verts = [
+                MenuVertex { position: [left, bottom], tex_coords: [0.0, 1.0], color },
+                MenuVertex { position: [right, bottom], tex_coords: [1.0, 1.0], color },
+                MenuVertex { position: [right, top], tex_coords: [1.0, 0.0], color },
+                MenuVertex { position: [left, top], tex_coords: [0.0, 0.0], color },
+            ];
+            vertices.extend_from_slice(&button_verts);
+            indices.extend_from_slice(&[base, base + 1, base + 2, base + 2, base + 3, base]);
+        }
+
+        let vertex_offset = 4 * std::mem::size_of::<MenuVertex>();
+        let index_offset = 6 * std::mem::size_of::<u32>();
+
+        queue.write_buffer(&self.vertex_buffer, vertex_offset as u64, bytemuck::cast_slice(&vertices));
+
+        let adjusted_indices: Vec<u32> = indices.iter().map(|&i| i + 4).collect();
+        queue.write_buffer(&self.index_buffer, index_offset as u64, bytemuck::cast_slice(&adjusted_indices));
+
+        (6, indices.len())
+    }
+
+    pub fn render(&mut self, view: &wgpu::TextureView, device: &wgpu::Device, queue: &wgpu::Queue, bg_indices: usize) {
+        let (button_start, button_count) = self.update_button_geometry(queue);
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("WorldCreation Render Encoder"),
+        });
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("WorldCreation Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(self.index_buffer.slice(..), wgpu::IndexFormat::Uint32);
+
+            render_pass.set_bind_group(0, &self.wallpaper_bind_group, &[]);
+            render_pass.draw_indexed(0..bg_indices as u32, 0, 0..1);
+
+            render_pass.set_bind_group(0, &self.button_bind_group, &[]);
+            render_pass.draw_indexed(button_start as u32..(button_start + button_count) as u32, 0, 0..1);
+        }
+
+        let scale_x = self.window_width as f32 / 1280.0;
+        let scale_y = self.window_height as f32 / 720.0;
+
+        // Update error message if present
+        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+        let error_color = if let Some(ref error) = self.world_name_error {
+            self.buffers[9].set_text(&mut self.font_system, error, font_attrs, Shaping::Advanced);
+            GlyphonColor::rgb(255, 80, 80)
+        } else {
+            self.buffers[9].set_text(&mut self.font_system, "", font_attrs, Shaping::Advanced);
+            GlyphonColor::rgb(153, 153, 153)
+        };
+
+        let mut text_areas = vec![
+            // Title
+            TextArea {
+                buffer: &self.buffers[0],
+                left: 420.0 * scale_x,
+                top: 100.0 * scale_y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: GlyphonColor::rgb(255, 255, 255),
+                custom_glyphs: &[],
+            },
+            // World name label
+            TextArea {
+                buffer: &self.buffers[1],
+                left: 450.0 * scale_x,
+                top: 170.0 * scale_y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: GlyphonColor::rgb(200, 200, 200),
+                custom_glyphs: &[],
+            },
+            // World name input text
+            TextArea {
+                buffer: &self.buffers[2],
+                left: 450.0 * scale_x,
+                top: 205.0 * scale_y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: if self.input_focused {
+                    GlyphonColor::rgb(255, 255, 255)
+                } else {
+                    GlyphonColor::rgb(180, 180, 180)
+                },
+                custom_glyphs: &[],
+            },
+        ];
+
+        // 5 world size buttons
+        for i in 0..5 {
+            let y = (268.0 + i as f32 * 60.0) * scale_y;
+            let color = if Some(i) == self.hovered_option {
+                GlyphonColor::rgb(255, 255, 0)
+            } else {
+                GlyphonColor::rgb(230, 230, 230)
+            };
+
+            text_areas.push(TextArea {
+                buffer: &self.buffers[3 + i],
+                left: 520.0 * scale_x,
+                top: y,
+                scale: 1.0,
+                bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+                default_color: color,
+                custom_glyphs: &[],
+            });
+        }
+
+        // Back button
+        let back_y = (268.0 + 5.0 * 60.0) * scale_y;
+        let back_color = if Some(5) == self.hovered_option {
+            GlyphonColor::rgb(255, 255, 0)
+        } else {
+            GlyphonColor::rgb(230, 230, 230)
         };
         text_areas.push(TextArea {
-            buffer: &self.buffers[11],
-            left: 510.0 * scale_x,
-            top: 638.0 * scale_y,
+            buffer: &self.buffers[8],
+            left: 600.0 * scale_x,
+            top: back_y,
             scale: 1.0,
             bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
-            default_color: input_color,
+            default_color: back_color,
             custom_glyphs: &[],
         });
 
-        // Prepare text areas
+        // Error message
+        text_areas.push(TextArea {
+            buffer: &self.buffers[9],
+            left: 450.0 * scale_x,
+            top: 235.0 * scale_y,
+            scale: 1.0,
+            bounds: TextBounds { left: 0, top: 0, right: self.window_width as i32, bottom: self.window_height as i32 },
+            default_color: error_color,
+            custom_glyphs: &[],
+        });
+
         self.text_renderer
             .prepare(
                 device,

@@ -10,13 +10,14 @@ use winit::{
 use wgpu;
 
 use crate::state::State;
-use crate::menu::{MainMenu, PauseMenu, PauseAction, WorldSelectionMenu, WorldSelectionAction};
+use crate::menu::{MainMenu, PauseMenu, PauseAction, WorldSelectionMenu, WorldSelectionAction, WorldCreationMenu};
 use crate::save;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GameState {
     Menu,
-    WorldSelection,  // NEW: For world selection screen
+    WorldSelection,
+    WorldCreation,  // NEW: For world creation screen
     Playing,
     Paused,
 }
@@ -34,7 +35,8 @@ pub struct MenuContext {
 pub struct App {
     pub state: Option<State>,
     pub menu: Option<MainMenu>,
-    pub world_selection: Option<WorldSelectionMenu>,  // NEW
+    pub world_selection: Option<WorldSelectionMenu>,
+    pub world_creation: Option<WorldCreationMenu>,  // NEW
     pub menu_ctx: Option<MenuContext>,
     pub pause_menu: Option<PauseMenu>,
     pub game_state: GameState,
@@ -168,101 +170,66 @@ impl ApplicationHandler for App {
                     } => {
                         if let Some(menu) = &mut self.menu {
                             if let Some((x, y)) = self.last_mouse_pos {
-                                // Check if clicking on text input first
-                                if menu.check_input_click(x, y) {
-                                    if let Some(ctx) = &self.menu_ctx {
-                                        ctx.window.request_redraw();
-                                    }
-                                } else {
-                                    let button_index = menu.get_clicked_button(x, y);
+                                let button_index = menu.get_clicked_button(x, y);
 
-                                    match button_index {
-                                        Some(0) | Some(1) | Some(2) | Some(3) | Some(4) => {
-                                            if let Some(selected_size) = menu.handle_click(x, y) {
-                                                let world_name = menu.get_world_name();
-                                                println!("Starting world generation: {:?} chunks, name: {}", selected_size.get_chunks(), world_name);
-
-                                                if let Some(ctx) = self.menu_ctx.take() {
-                                                    self.state = Some(pollster::block_on(State::new(
-                                                        ctx.window,
-                                                        selected_size,
-                                                        ctx.instance,
-                                                        ctx.surface,
-                                                        world_name
-                                                    )));
-                                                    self.menu = None;
-                                                    self.game_state = GameState::Playing;
-                                                }
-                                            } else {
-                                                // Validation failed
-                                                if let Some(ctx) = &self.menu_ctx {
-                                                    ctx.window.request_redraw();
-                                                }
-                                            }
+                                match button_index {
+                                    Some(0) => {
+                                        // Load World
+                                        println!("Load World button clicked");
+                                        if let Some(ctx) = &self.menu_ctx {
+                                            let world_selection = WorldSelectionMenu::new(
+                                                &ctx.device,
+                                                &ctx.queue,
+                                                ctx.surface_format,
+                                                ctx.window.inner_size().width,
+                                                ctx.window.inner_size().height,
+                                            );
+                                            self.world_selection = Some(world_selection);
+                                            self.game_state = GameState::WorldSelection;
                                         }
-                                        Some(5) => {
-                                            println!("Load World button clicked");
+                                    }
+                                    Some(1) => {
+                                        // Create New World
+                                        println!("Create New World button clicked");
+                                        if let Some(menu) = self.menu.take() {
                                             if let Some(ctx) = &self.menu_ctx {
-                                                let world_selection = WorldSelectionMenu::new(
+                                                let world_creation = WorldCreationMenu::new(
                                                     &ctx.device,
                                                     &ctx.queue,
                                                     ctx.surface_format,
                                                     ctx.window.inner_size().width,
                                                     ctx.window.inner_size().height,
+                                                    menu.pipeline,
+                                                    menu.wallpaper_bind_group,
+                                                    menu.button_bind_group,
+                                                    menu.wallpaper_width,
+                                                    menu.wallpaper_height,
                                                 );
-                                                self.world_selection = Some(world_selection);
-                                                self.game_state = GameState::WorldSelection;
+                                                self.world_creation = Some(world_creation);
+                                                self.game_state = GameState::WorldCreation;
                                             }
                                         }
-                                        Some(6) => {
-                                            println!("Quit button clicked");
-                                            event_loop.exit();
-                                        }
-                                        _ => {}
                                     }
+                                    Some(2) => {
+                                        // Quit
+                                        println!("Quit button clicked");
+                                        event_loop.exit();
+                                    }
+                                    _ => {}
                                 }
                             }
                         }
                     }
                     WindowEvent::KeyboardInput {
                         event: KeyEvent {
-                            text,
-                            physical_key: PhysicalKey::Code(key),
+                            physical_key: PhysicalKey::Code(KeyCode::Escape),
                             state: key_state,
                             ..
                         },
                         ..
                     } => {
                         if key_state == ElementState::Pressed {
-                            if let Some(menu) = &mut self.menu {
-                                if menu.is_input_focused() {
-                                    match key {
-                                        KeyCode::Backspace => {
-                                            menu.handle_backspace();
-                                            if let Some(ctx) = &self.menu_ctx {
-                                                ctx.window.request_redraw();
-                                            }
-                                        }
-                                        KeyCode::Escape => {
-                                            event_loop.exit();
-                                        }
-                                        _ => {
-                                            if let Some(text) = text {
-                                                for c in text.chars() {
-                                                    menu.handle_text_input(c);
-                                                }
-                                                if let Some(ctx) = &self.menu_ctx {
-                                                    ctx.window.request_redraw();
-                                                }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    if key == KeyCode::Escape {
-                                        event_loop.exit();
-                                    }
-                                }
-                            }
+                            event_loop.exit();
                         }
                     }
                     _ => {}
@@ -345,10 +312,48 @@ impl ApplicationHandler for App {
                                                 }
                                             }
                                             WorldSelectionAction::CreateNew => {
+                                                // Recreate main menu before returning
+                                                let mut menu = MainMenu::new(
+                                                    &ctx.device,
+                                                    &ctx.queue,
+                                                    ctx.surface_format,
+                                                    ctx.window.inner_size().width,
+                                                    ctx.window.inner_size().height
+                                                );
+                                                let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                                // Render initial menu
+                                                if let Ok(output) = ctx.surface.get_current_texture() {
+                                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                                    menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                                    output.present();
+                                                }
+
+                                                self.menu = Some(menu);
+                                                self.world_selection = None;
                                                 self.game_state = GameState::Menu;
                                                 println!("Returning to main menu for new world creation");
                                             }
                                             WorldSelectionAction::Back => {
+                                                // Recreate main menu before returning
+                                                let mut menu = MainMenu::new(
+                                                    &ctx.device,
+                                                    &ctx.queue,
+                                                    ctx.surface_format,
+                                                    ctx.window.inner_size().width,
+                                                    ctx.window.inner_size().height
+                                                );
+                                                let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                                // Render initial menu
+                                                if let Ok(output) = ctx.surface.get_current_texture() {
+                                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                                    menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                                    output.present();
+                                                }
+
+                                                self.menu = Some(menu);
+                                                self.world_selection = None;
                                                 self.game_state = GameState::Menu;
                                                 println!("Returning to main menu");
                                             }
@@ -365,8 +370,202 @@ impl ApplicationHandler for App {
                                 ..
                             } => {
                                 if key_state == ElementState::Pressed {
+                                    // Recreate main menu before returning
+                                    let mut menu = MainMenu::new(
+                                        &ctx.device,
+                                        &ctx.queue,
+                                        ctx.surface_format,
+                                        ctx.window.inner_size().width,
+                                        ctx.window.inner_size().height
+                                    );
+                                    let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                    // Render initial menu
+                                    if let Ok(output) = ctx.surface.get_current_texture() {
+                                        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                        menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                        output.present();
+                                    }
+
+                                    self.menu = Some(menu);
+                                    self.world_selection = None;
                                     self.game_state = GameState::Menu;
                                     println!("Returning to main menu");
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            GameState::WorldCreation => {
+                if let Some(world_creation) = &mut self.world_creation {
+                    if let Some(ctx) = &self.menu_ctx {
+                        match event {
+                            WindowEvent::CloseRequested => event_loop.exit(),
+                            WindowEvent::Resized(physical_size) => {
+                                world_creation.resize(&ctx.queue, physical_size.width, physical_size.height);
+
+                                let config = wgpu::SurfaceConfiguration {
+                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                    format: ctx.surface_format,
+                                    width: physical_size.width,
+                                    height: physical_size.height,
+                                    present_mode: wgpu::PresentMode::Fifo,
+                                    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+                                    view_formats: vec![],
+                                    desired_maximum_frame_latency: 2,
+                                };
+                                ctx.surface.configure(&ctx.device, &config);
+                                ctx.window.request_redraw();
+                            }
+                            WindowEvent::RedrawRequested => {
+                                if let Ok(output) = ctx.surface.get_current_texture() {
+                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                    let bg_indices = world_creation.update_geometry(&ctx.queue);
+                                    world_creation.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                    output.present();
+                                }
+                            }
+                            WindowEvent::CursorMoved { position, .. } => {
+                                self.last_mouse_pos = Some((position.x, position.y));
+                                if world_creation.check_hover(position.x, position.y) {
+                                    ctx.window.request_redraw();
+                                }
+                            }
+                            WindowEvent::MouseInput {
+                                state: ElementState::Pressed,
+                                button: MouseButton::Left,
+                                ..
+                            } => {
+                                if let Some(pos) = self.last_mouse_pos {
+                                    // Check if clicking on input field
+                                    if world_creation.check_input_click(pos.0, pos.1) {
+                                        ctx.window.request_redraw();
+                                    } else {
+                                        let button_index = world_creation.get_clicked_button(pos.0, pos.1);
+
+                                        match button_index {
+                                            Some(0) | Some(1) | Some(2) | Some(3) | Some(4) => {
+                                                // World size buttons
+                                                if let Some(selected_size) = world_creation.handle_click(pos.0, pos.1) {
+                                                    let world_name = world_creation.get_world_name();
+                                                    println!("Starting world generation: {:?} chunks, name: {}", selected_size.get_chunks(), world_name);
+
+                                                    if let Some(ctx) = self.menu_ctx.take() {
+                                                        self.state = Some(pollster::block_on(State::new(
+                                                            ctx.window,
+                                                            selected_size,
+                                                            ctx.instance,
+                                                            ctx.surface,
+                                                            world_name
+                                                        )));
+                                                        self.world_creation = None;
+                                                        self.menu = None;
+                                                        self.game_state = GameState::Playing;
+                                                    }
+                                                } else {
+                                                    // Validation failed
+                                                    ctx.window.request_redraw();
+                                                }
+                                            }
+                                            Some(5) => {
+                                                // Back button - recreate main menu
+                                                let mut menu = MainMenu::new(
+                                                    &ctx.device,
+                                                    &ctx.queue,
+                                                    ctx.surface_format,
+                                                    ctx.window.inner_size().width,
+                                                    ctx.window.inner_size().height
+                                                );
+                                                let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                                // Render initial menu
+                                                if let Ok(output) = ctx.surface.get_current_texture() {
+                                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                                    menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                                    output.present();
+                                                }
+
+                                                self.menu = Some(menu);
+                                                self.world_creation = None;
+                                                self.game_state = GameState::Menu;
+                                                println!("Returning to main menu");
+                                            }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                            }
+                            WindowEvent::KeyboardInput {
+                                event: KeyEvent {
+                                    text,
+                                    physical_key: PhysicalKey::Code(key),
+                                    state: key_state,
+                                    ..
+                                },
+                                ..
+                            } => {
+                                if key_state == ElementState::Pressed {
+                                    if world_creation.is_input_focused() {
+                                        match key {
+                                            KeyCode::Backspace => {
+                                                world_creation.handle_backspace();
+                                                ctx.window.request_redraw();
+                                            }
+                                            KeyCode::Escape => {
+                                                // Recreate main menu before returning
+                                                let mut menu = MainMenu::new(
+                                                    &ctx.device,
+                                                    &ctx.queue,
+                                                    ctx.surface_format,
+                                                    ctx.window.inner_size().width,
+                                                    ctx.window.inner_size().height
+                                                );
+                                                let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                                // Render initial menu
+                                                if let Ok(output) = ctx.surface.get_current_texture() {
+                                                    let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                                    menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                                    output.present();
+                                                }
+
+                                                self.menu = Some(menu);
+                                                self.world_creation = None;
+                                                self.game_state = GameState::Menu;
+                                            }
+                                            _ => {
+                                                if let Some(text) = text {
+                                                    for c in text.chars() {
+                                                        world_creation.handle_text_input(c);
+                                                    }
+                                                    ctx.window.request_redraw();
+                                                }
+                                            }
+                                        }
+                                    } else if key == KeyCode::Escape {
+                                        // Recreate main menu before returning
+                                        let mut menu = MainMenu::new(
+                                            &ctx.device,
+                                            &ctx.queue,
+                                            ctx.surface_format,
+                                            ctx.window.inner_size().width,
+                                            ctx.window.inner_size().height
+                                        );
+                                        let bg_indices = menu.update_geometry(&ctx.queue);
+
+                                        // Render initial menu
+                                        if let Ok(output) = ctx.surface.get_current_texture() {
+                                            let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+                                            menu.render(&view, &ctx.device, &ctx.queue, bg_indices);
+                                            output.present();
+                                        }
+
+                                        self.menu = Some(menu);
+                                        self.world_creation = None;
+                                        self.game_state = GameState::Menu;
+                                    }
                                 }
                             }
                             _ => {}
@@ -791,7 +990,7 @@ impl ApplicationHandler for App {
                     ctx.window.request_redraw();
                 }
             }
-            GameState::WorldSelection => {
+            GameState::WorldSelection | GameState::WorldCreation => {
                 if let Some(ctx) = &self.menu_ctx {
                     ctx.window.request_redraw();
                 }

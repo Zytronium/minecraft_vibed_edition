@@ -1398,7 +1398,7 @@ dependencies = [
 
 [[package]]
 name = "minecraft_vibed_edition"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "bincode",
  "bytemuck",
