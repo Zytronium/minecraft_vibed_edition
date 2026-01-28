@@ -211,6 +211,12 @@ impl LoadingScreen {
         }
     }
 
+    /// Update the title text (for switching between "Generating World" and "Loading World")
+    pub fn set_title(&mut self, title: &str) {
+        let font_attrs = Attrs::new().family(Family::Name("Minecraft"));
+        self.title_buffer.set_text(&mut self.font_system, title, font_attrs, Shaping::Advanced);
+    }
+
     /// Update the progress bar (progress from 0.0 to 1.0, current chunk number, total chunks)
     pub fn update_progress(&mut self, queue: &wgpu::Queue, progress: f32, chunk_num: usize, total_chunks: usize) -> usize {
         // Update progress text

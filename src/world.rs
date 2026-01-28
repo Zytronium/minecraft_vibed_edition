@@ -10,15 +10,16 @@ pub const CHUNK_HEIGHT: usize = 128; // Vertical size (Y) - like Minecraft 1.18+
 
 /// A 16x128x16 section of the world
 pub struct Chunk {
-    blocks: [[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
-    offset_x: i32,  // Chunk position in world (X * CHUNK_WIDTH)
-    offset_z: i32,  // Chunk position in world (Z * CHUNK_WIDTH)
+    pub blocks: [[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH],
+    pub offset_x: i32,  // Chunk position in world (X * CHUNK_WIDTH)
+    pub offset_z: i32,  // Chunk position in world (Z * CHUNK_WIDTH)
 }
 
 /// World containing all chunks with cross-chunk block access
 pub struct World {
     pub chunks: HashMap<(i32, i32), Chunk>,
     pub registry: Arc<BlockRegistry>,
+    pub size_chunks: i32,
 }
 
 /// Per-chunk mesh data to avoid creating massive monolithic buffers
@@ -44,6 +45,7 @@ impl World {
         Self {
             chunks: HashMap::new(),
             registry,
+            size_chunks: 0,
         }
     }
 
@@ -189,6 +191,7 @@ impl World {
             }
         }
 
+        world.size_chunks = world_size_chunks;
         (world, chunk_meshes)
     }
 
@@ -208,6 +211,56 @@ impl World {
             })
         } else {
             None
+        }
+    }
+
+    /// Get all chunks for saving
+    pub fn get_all_chunks(&self) -> Vec<(i32, i32, &[[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH])> {
+        self.chunks.iter()
+            .map(|((_x, _z), chunk)| (chunk.offset_x, chunk.offset_z, &chunk.blocks))
+            .collect()
+    }
+
+    /// Get world size in chunks
+    pub fn get_size_chunks(&self) -> i32 {
+        self.size_chunks
+    }
+
+    /// Set a chunk's blocks (for loading saves)
+    pub fn set_chunk_blocks(&mut self, offset_x: i32, offset_z: i32, blocks: [[[BlockType; CHUNK_WIDTH]; CHUNK_HEIGHT]; CHUNK_WIDTH]) {
+        if let Some((_, chunk)) = self.chunks.iter_mut().find(|(k, _)| k.0 == offset_x && k.1 == offset_z) {
+            chunk.blocks = blocks;
+        }
+    }
+
+    /// Create world from loaded save data (alternative constructor)
+    pub fn from_saved_chunks(
+        saved_chunks: Vec<crate::save::SavedChunk>,
+        size_chunks: i32,
+        registry: Arc<BlockRegistry>,
+    ) -> Self {
+        let chunks: HashMap<(i32, i32), Chunk> = saved_chunks
+            .into_iter()
+            .map(|saved| {
+                // Convert world offsets back to chunk coordinates for HashMap key
+                let chunk_x = saved.offset_x / CHUNK_WIDTH as i32;
+                let chunk_z = saved.offset_z / CHUNK_WIDTH as i32;
+
+                let chunk = Chunk {
+                    blocks: saved.to_blocks(),
+                    offset_x: saved.offset_x,
+                    offset_z: saved.offset_z,
+                };
+
+                // Use chunk coordinates as the HashMap key
+                ((chunk_x, chunk_z), chunk)
+            })
+            .collect();
+
+        Self {
+            chunks,
+            size_chunks,
+            registry,
         }
     }
 }
@@ -371,7 +424,7 @@ impl Chunk {
 
     /// Generate mesh geometry for this chunk with cross-chunk neighbor checking
     /// Returns (opaque_vertices, opaque_indices, transparent_vertices, transparent_indices)
-    fn generate_mesh(&self, world: &World) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>) {
+    pub fn generate_mesh(&self, world: &World) -> (Vec<Vertex>, Vec<u32>, Vec<Vertex>, Vec<u32>) {
         let mut opaque_vertices = Vec::new();
         let mut opaque_indices = Vec::new();
         let mut transparent_vertices = Vec::new();
