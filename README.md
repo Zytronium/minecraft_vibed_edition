@@ -73,7 +73,7 @@ one AI prompt to fix.
 ### Day 2
 Day 2 had much less noticeable progress than day 2, but I actually made so much
 progress that I used up all my free Claude credits for the day on 5 or 6 different
-Claude accounts. Most of it was troubleshooting. I did not have as much luck one
+Claude accounts. Most of it was troubleshooting. I did not have as much luck on
 day 2 with getting things right first or second try as I did on day 1.
 
 On day 2, I implemented a main menu and a loading screen. This makes the game 
@@ -101,23 +101,62 @@ Here's a demo video for the progress so far:
 
 ### Day 3
 Day 3 was rather productive. Although the number of features pales in comparison
-to day 1, I feel like it was my most productive day yet. Mainly because I the 
-features added and updated are very nice. First, I updated the main menu:  
+to day 1, I feel like it was my most productive day yet. Mainly because the 
+features I added and updated are very nice.  
+First, I updated the main menu:  
 
 ![new main menu](readme_assets/main_menu_2.png)
 
 Second, I added **Creative Mode**! Below is a demo video for creative mode:
-[![Video demo](readme_assets/TplacIZr_thumbnail.png)](https://stellicast.com/watch/TplacIZr)
+[![Video demo](readme_assets/TplacIZr_thumbnail.png)](https://stellicast.com/watch/TplacIZr)  
+This video was recorded before you could choose which block to place.
 
 Creative mode is very basic so far. There's gravity, block collisions, jumping,
-block breaking, and (dirt) block placing. You can press F (or G for some reason)
-to switch between Creative and Spectator modes.
+block breaking, and block placing. You can press F (or G for some reason)
+to switch between Creative and Spectator modes. There's 9 different blocks
+to choose from to place, as seen in the new hotbar.
 
 I also updated the world sizes to be a little more reasonable, as seen in the 
 first image for Day 3.
 
 I also fixed camera movement so you can freely move your mouse as far as you want
-now. 
+now. On top of this, I also fixed the bug where large world sizes crash the game
+because they overflowed the buffer, as Claude said. I fixed it by giving each
+chunk its own buffer in memory. However, there's now a bug in 64x64 where you 
+usually can't jump. Going down a block sometimes helps you be able to jump. 
+Not sure why this happens, I just know it's connected to exessive world size.
 
-There's now a bug in 64x64 where you usually can't jump. Going down a block
-sometimes helps you be able to jump. Not sure why this happens.
+---
+
+### Day 4
+Day 4 was even more productive than day 3. Here's a summary of the changes made:
+- Crosshair texture was fixed and given an invert colors affect just like in real Minecraft
+- Hotbar slot textures were fixed.
+- A pause menu was added with 3 options:
+  - Resume Game
+  - Exit to Main Menu
+  - Exit to Desktop
+- Added **World Save Files**
+  - This took up most of the day to implement
+- Added a world creation screen on the main menu
+- Added a load from save screen on the main menu
+- Updated main menu to show 3 buttons:
+  - Load World
+  - Create New World
+  - Quit
+
+![new main menu](readme_assets/new_main_menu.png)  
+![load world menu](readme_assets/load_save.png)  
+![world creation menu](readme_assets/create_new_world.png)
+
+---
+
+### Day 5
+Day 5 has just started as of the writing of this, but if I work on the project,
+I plan to implement the following features:
+- Fix rendering glitch on loaded existing worlds
+- Add creative inventory
+- Toggle fly by double pressing space bar without entering spectator mode
+- Fix surface caves
+- Time permitting: add water
+- Time permitting: add peaceful mobs
